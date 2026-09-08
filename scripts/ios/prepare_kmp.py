@@ -132,18 +132,50 @@ rewrite(
     ),
 )
 
-# 7) listenTogether/commonMain uses Kotlin/JVM AutoCloseable.use() on Okio
-# BufferedSink/BufferedSource. On Native these are Closeable but not AutoCloseable.
-# Replace both compression paths with explicit try/finally so resource handling is KMP-safe.
+# 7) Okio Sink/Source are Closeable in common code but not JVM AutoCloseable on
+# Kotlin/Native. Avoid stdlib use{} resolving to the JVM-only AutoCloseable overload.
 message_codec = core / "service/listenTogether/src/commonMain/kotlin/org/simpmusic/listentogether/MessageCodec.kt"
 def patch_message_codec(text: str) -> str:
-    old_gzip = '''    private fun gzip(data: ByteArray): ByteArray {\n        val sink = Buffer()\n        GzipSink(sink).buffer().use { it.write(data) }\n        return sink.readByteArray()\n    }'''
-    new_gzip = '''    private fun gzip(data: ByteArray): ByteArray {\n        val sink = Buffer()\n        val gzipSink = GzipSink(sink).buffer()\n        try {\n            gzipSink.write(data)\n        } finally {\n            gzipSink.close()\n        }\n        return sink.readByteArray()\n    }'''
-    text = text.replace(old_gzip, new_gzip)
-    old_gunzip = '''    private fun gunzip(data: ByteArray): ByteArray? =\n        runCatching {\n            GzipSource(Buffer().apply { write(data) }).buffer().use { it.readByteArray() }\n        }.getOrNull()'''
-    new_gunzip = '''    private fun gunzip(data: ByteArray): ByteArray? =\n        runCatching {\n            val source = GzipSource(Buffer().apply { write(data) }).buffer()\n            try {\n                source.readByteArray()\n            } finally {\n                source.close()\n            }\n        }.getOrNull()'''
-    return text.replace(old_gunzip, new_gunzip)
+    text = text.replace(
+        '''        val sink = Buffer()\n        GzipSink(sink).buffer().use { it.write(data) }\n        return sink.readByteArray()''',
+        '''        val sink = Buffer()\n        val gzipSink = GzipSink(sink).buffer()\n        try {\n            gzipSink.write(data)\n        } finally {\n            gzipSink.close()\n        }\n        return sink.readByteArray()''',
+    )
+    text = text.replace(
+        '''        runCatching {\n            GzipSource(Buffer().apply { write(data) }).buffer().use { it.readByteArray() }\n        }.getOrNull()''',
+        '''        runCatching {\n            val gzipSource = GzipSource(Buffer().apply { write(data) }).buffer()\n            try {\n                gzipSource.readByteArray()\n            } finally {\n                gzipSource.close()\n            }\n        }.getOrNull()''',
+    )
+    return text
 rewrite(message_codec, patch_message_codec)
+
+# 8) Room KMP requires a generated database constructor on non-Android targets.
+# KSP generates the actual implementation for both iosSimulatorArm64 and iosArm64.
+music_db = core / "data/src/commonMain/kotlin/com/maxrave/data/db/MusicDatabase.kt"
+def patch_room_database(text: str) -> str:
+    if "import androidx.room.ConstructedBy\n" not in text:
+        text = text.replace(
+            "import androidx.room.AutoMigration\n",
+            "import androidx.room.AutoMigration\nimport androidx.room.ConstructedBy\n",
+        )
+    if "import androidx.room.RoomDatabaseConstructor\n" not in text:
+        text = text.replace(
+            "import androidx.room.RoomDatabase\n",
+            "import androidx.room.RoomDatabase\nimport androidx.room.RoomDatabaseConstructor\n",
+        )
+    marker = ")\n@TypeConverters(Converters::class)\nabstract class MusicDatabase"
+    if "@ConstructedBy(MusicDatabaseConstructor::class)" not in text:
+        text = text.replace(
+            marker,
+            ")\n@ConstructedBy(MusicDatabaseConstructor::class)\n@TypeConverters(Converters::class)\nabstract class MusicDatabase",
+            1,
+        )
+    constructor = '''\n\n@Suppress("KotlinNoActualForExpect")\nexpect object MusicDatabaseConstructor : RoomDatabaseConstructor<MusicDatabase> {\n    override fun initialize(): MusicDatabase\n}\n'''
+    if "expect object MusicDatabaseConstructor" not in text:
+        text = text.replace(
+            "\nexpect fun getDatabaseBuilder(converters: Converters): RoomDatabase.Builder<MusicDatabase>\n",
+            constructor + "\nexpect fun getDatabaseBuilder(converters: Converters): RoomDatabase.Builder<MusicDatabase>\n",
+        )
+    return text
+rewrite(music_db, patch_room_database)
 
 print(f"Prepared iOS KMP build; rewrote {len(changed)} files")
 for path in changed:
