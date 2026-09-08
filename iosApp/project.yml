@@ -1,0 +1,37 @@
+name: SimpMusic
+options:
+  bundleIdPrefix: com.maxrave.simpmusic
+  deploymentTarget:
+    iOS: '16.0'
+settings:
+  base:
+    SWIFT_VERSION: 5.0
+    DEVELOPMENT_TEAM: ''
+targets:
+  SimpMusic:
+    type: application
+    platform: iOS
+    deploymentTarget: '16.0'
+    sources:
+      - path: SimpMusicApp.swift
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: SimpMusic
+        UILaunchScreen: {}
+        UIBackgroundModes:
+          - audio
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    dependencies:
+      - framework: ../composeApp/build/bin/iosArm64/releaseFramework/ComposeApp.framework
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.maxrave.simpmusic.ios
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: '1,2'
+        FRAMEWORK_SEARCH_PATHS: '$(inherited) $(SRCROOT)/../composeApp/build/bin/iosArm64/releaseFramework'
