@@ -3,53 +3,54 @@ name: Build iOS
 on:
   workflow_dispatch:
   push:
-    branches:
-      - 'ios-port'
+    branches: [ios-port]
 
 jobs:
   build-ios:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v6
+      - name: Checkout
+        uses: actions/checkout@v6
         with:
-          submodules: 'recursive'
+          submodules: recursive
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
-          java-version: 21
-          distribution: "microsoft"
-          cache: 'gradle'
+          java-version: '21'
+          distribution: microsoft
+          cache: gradle
 
-      - name: Enable iOS targets for port branch
-        shell: python3 {0}
+      - name: Enable iOS targets
         run: |
+          python3 <<'PY'
           from pathlib import Path
-          p = Path('composeApp/build.gradle.kts')
+          p = Path("composeApp/build.gradle.kts")
           s = p.read_text()
-          old = '''//    listOf(
-//        iosArm64(),
-//        iosSimulatorArm64()
-//    ).forEach { iosTarget ->
-//        iosTarget.binaries.framework {
-//            baseName = "ComposeApp"
-//            isStatic = true
-//        }
-//    }'''
-          new = '''    listOf(
-        iosArm64(),
-        iosSimulatorArm64()
-    ).forEach { iosTarget ->
-        iosTarget.binaries.framework {
-            baseName = "ComposeApp"
-            isStatic = true
-        }
-    }'''
+          old = """//    listOf(
+          //        iosArm64(),
+          //        iosSimulatorArm64()
+          //    ).forEach { iosTarget ->
+          //        iosTarget.binaries.framework {
+          //            baseName = \"ComposeApp\"
+          //            isStatic = true
+          //        }
+          //    }"""
+          new = """    listOf(
+                  iosArm64(),
+                  iosSimulatorArm64()
+              ).forEach { iosTarget ->
+                  iosTarget.binaries.framework {
+                      baseName = \"ComposeApp\"
+                      isStatic = true
+                  }
+              }"""
           if old not in s:
-              raise SystemExit('iOS target block not found')
+              raise SystemExit("iOS target block not found")
           p.write_text(s.replace(old, new))
+          PY
 
-      - name: Generate aboutLibraries.json
+      - name: Generate library metadata
         run: ./gradlew exportLibraryDefinitions
 
       - name: Build simulator framework
@@ -58,25 +59,19 @@ jobs:
       - name: Build device framework
         run: ./gradlew :composeApp:linkReleaseFrameworkIosArm64 --stacktrace
 
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
       - name: Generate Xcode project
         run: |
-          brew install xcodegen
           cd iosApp
           xcodegen generate
 
-      - name: Build unsigned iOS app
+      - name: Build unsigned app
         run: |
-          xcodebuild \
-            -project iosApp/SimpMusic.xcodeproj \
-            -scheme SimpMusic \
-            -configuration Release \
-            -sdk iphoneos \
-            -derivedDataPath build/ios \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            build
+          xcodebuild -project iosApp/SimpMusic.xcodeproj -scheme SimpMusic -configuration Release -sdk iphoneos -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 
-      - name: Package unsigned IPA
+      - name: Package IPA
         run: |
           rm -rf build/Payload
           mkdir -p build/Payload
@@ -84,15 +79,7 @@ jobs:
           cd build
           zip -qry SimpMusic-unsigned.ipa Payload
 
-      - name: Upload simulator framework
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ComposeApp-iOS-Simulator
-          path: composeApp/build/bin/iosSimulatorArm64/debugFramework/ComposeApp.framework
-
       - name: Upload unsigned IPA
-        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: SimpMusic-iOS-unsigned
