@@ -7,7 +7,7 @@ on:
       - 'ios-port'
 
 jobs:
-  framework:
+  build-ios:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v6
@@ -52,12 +52,48 @@ jobs:
       - name: Generate aboutLibraries.json
         run: ./gradlew exportLibraryDefinitions
 
-      - name: Build iOS simulator framework
+      - name: Build simulator framework
         run: ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64 --stacktrace
 
-      - name: Upload iOS framework
+      - name: Build device framework
+        run: ./gradlew :composeApp:linkReleaseFrameworkIosArm64 --stacktrace
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          cd iosApp
+          xcodegen generate
+
+      - name: Build unsigned iOS app
+        run: |
+          xcodebuild \
+            -project iosApp/SimpMusic.xcodeproj \
+            -scheme SimpMusic \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/ios \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R build/ios/Build/Products/Release-iphoneos/SimpMusic.app build/Payload/
+          cd build
+          zip -qry SimpMusic-unsigned.ipa Payload
+
+      - name: Upload simulator framework
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: ComposeApp-iOS-Simulator
           path: composeApp/build/bin/iosSimulatorArm64/debugFramework/ComposeApp.framework
+
+      - name: Upload unsigned IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpMusic-iOS-unsigned
+          path: build/SimpMusic-unsigned.ipa
