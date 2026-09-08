@@ -132,6 +132,19 @@ rewrite(
     ),
 )
 
+# 7) listenTogether/commonMain uses Kotlin/JVM AutoCloseable.use() on Okio
+# BufferedSink/BufferedSource. On Native these are Closeable but not AutoCloseable.
+# Replace both compression paths with explicit try/finally so resource handling is KMP-safe.
+message_codec = core / "service/listenTogether/src/commonMain/kotlin/org/simpmusic/listentogether/MessageCodec.kt"
+def patch_message_codec(text: str) -> str:
+    old_gzip = '''    private fun gzip(data: ByteArray): ByteArray {\n        val sink = Buffer()\n        GzipSink(sink).buffer().use { it.write(data) }\n        return sink.readByteArray()\n    }'''
+    new_gzip = '''    private fun gzip(data: ByteArray): ByteArray {\n        val sink = Buffer()\n        val gzipSink = GzipSink(sink).buffer()\n        try {\n            gzipSink.write(data)\n        } finally {\n            gzipSink.close()\n        }\n        return sink.readByteArray()\n    }'''
+    text = text.replace(old_gzip, new_gzip)
+    old_gunzip = '''    private fun gunzip(data: ByteArray): ByteArray? =\n        runCatching {\n            GzipSource(Buffer().apply { write(data) }).buffer().use { it.readByteArray() }\n        }.getOrNull()'''
+    new_gunzip = '''    private fun gunzip(data: ByteArray): ByteArray? =\n        runCatching {\n            val source = GzipSource(Buffer().apply { write(data) }).buffer()\n            try {\n                source.readByteArray()\n            } finally {\n                source.close()\n            }\n        }.getOrNull()'''
+    return text.replace(old_gunzip, new_gunzip)
+rewrite(message_codec, patch_message_codec)
+
 print(f"Prepared iOS KMP build; rewrote {len(changed)} files")
 for path in changed:
     print(f"  - {path}")
