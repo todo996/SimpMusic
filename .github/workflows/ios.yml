@@ -50,9 +50,6 @@ jobs:
           p.write_text(s.replace(old, new))
           PY
 
-      - name: Generate library metadata
-        run: ./gradlew exportLibraryDefinitions
-
       - name: Build simulator framework
         run: ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64 --stacktrace
 
