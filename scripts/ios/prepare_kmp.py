@@ -40,6 +40,27 @@ for p in core.rglob("*.kt"):
     p.write_text(updated)
     changed.append(p.relative_to(ROOT).as_posix())
 
+# 4) core/service/ktorExt currently declares the same iOS actuals at two levels:
+# iosMain and the concrete iosArm64Main/iosSimulatorArm64Main source sets. Kotlin
+# Native merges iosMain into each target, so those declarations conflict. Keep
+# the shared iosMain implementations and remove the target-specific duplicates.
+# This is a source-set structural normalization for both simulator and device.
+removed = []
+ktor_ext = core / "service" / "ktorExt" / "src"
+for source_set in ("iosArm64Main", "iosSimulatorArm64Main"):
+    base = ktor_ext / source_set / "kotlin" / "com" / "maxrave" / "ktorext"
+    candidates = [
+        base / f"Engine.{source_set.removesuffix('Main')}.kt",
+        base / "encoding" / f"BrotliEncoder.{source_set.removesuffix('Main')}.kt",
+    ]
+    for p in candidates:
+        if p.exists():
+            p.unlink()
+            removed.append(p.relative_to(ROOT).as_posix())
+
 print(f"Prepared iOS KMP build; normalized {len(changed)} commonMain files")
 for path in changed:
+    print(f"  - {path}")
+print(f"Removed {len(removed)} duplicated target-specific iOS actual files")
+for path in removed:
     print(f"  - {path}")
