@@ -15,16 +15,18 @@ jobs:
           submodules: recursive
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '21'
           distribution: microsoft
           cache: gradle
 
-      - name: Enable iOS targets
+      - name: Prepare iOS KMP build
         run: |
           python3 <<'PY'
           from pathlib import Path
+
+          # Enable iOS targets in composeApp.
           p = Path("composeApp/build.gradle.kts")
           s = p.read_text()
           old = """//    listOf(
@@ -47,14 +49,26 @@ jobs:
               }"""
           if old not in s:
               raise SystemExit("iOS target block not found")
-          p.write_text(s.replace(old, new))
+          s = s.replace(old, new)
+
+          # Android/JVM-only dependencies must not leak into native source sets.
+          s = s.replace("            implementation(libs.ui.tooling.preview)\n", "")
+          s = s.replace("            api(libs.coil.network.okhttp)\n", "")
+          p.write_text(s)
+
+          # The Compose-1.12 Compottie snapshot is not available to the macOS runner.
+          # Use the published stable artifact for the iOS port build.
+          v = Path("gradle/libs.versions.toml")
+          t = v.read_text()
+          t = t.replace('compottie = "2.2.2-compose-1.12-SNAPSHOT"', 'compottie = "2.2.2"')
+          v.write_text(t)
           PY
 
       - name: Build simulator framework
-        run: ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64 --stacktrace
+        run: ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64 --stacktrace --no-configuration-cache
 
       - name: Build device framework
-        run: ./gradlew :composeApp:linkReleaseFrameworkIosArm64 --stacktrace
+        run: ./gradlew :composeApp:linkReleaseFrameworkIosArm64 --stacktrace --no-configuration-cache
 
       - name: Install XcodeGen
         run: brew install xcodegen
