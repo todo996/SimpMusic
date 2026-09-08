@@ -21,48 +21,16 @@ jobs:
           distribution: microsoft
           cache: gradle
 
-      - name: Prepare iOS KMP build
+      - name: Audit and prepare iOS KMP sources
+        run: python3 scripts/ios/prepare_kmp.py
+
+      - name: Compile core for iOS simulator
         run: |
-          python3 <<'PY'
-          from pathlib import Path
-
-          # Enable iOS targets in composeApp.
-          p = Path("composeApp/build.gradle.kts")
-          s = p.read_text()
-          old = """//    listOf(
-          //        iosArm64(),
-          //        iosSimulatorArm64()
-          //    ).forEach { iosTarget ->
-          //        iosTarget.binaries.framework {
-          //            baseName = \"ComposeApp\"
-          //            isStatic = true
-          //        }
-          //    }"""
-          new = """    listOf(
-                  iosArm64(),
-                  iosSimulatorArm64()
-              ).forEach { iosTarget ->
-                  iosTarget.binaries.framework {
-                      baseName = \"ComposeApp\"
-                      isStatic = true
-                  }
-              }"""
-          if old not in s:
-              raise SystemExit("iOS target block not found")
-          s = s.replace(old, new)
-
-          # Android/JVM-only dependencies must not leak into native source sets.
-          s = s.replace("            implementation(libs.ui.tooling.preview)\n", "")
-          s = s.replace("            api(libs.coil.network.okhttp)\n", "")
-          p.write_text(s)
-
-          # The Compose-1.12 Compottie snapshot is not available to the macOS runner.
-          # Use the published stable artifact for the iOS port build.
-          v = Path("gradle/libs.versions.toml")
-          t = v.read_text()
-          t = t.replace('compottie = "2.2.2-compose-1.12-SNAPSHOT"', 'compottie = "2.2.2"')
-          v.write_text(t)
-          PY
+          ./gradlew \
+            :common:compileKotlinIosSimulatorArm64 \
+            :domain:compileKotlinIosSimulatorArm64 \
+            :data:compileKotlinIosSimulatorArm64 \
+            --stacktrace --no-configuration-cache
 
       - name: Build simulator framework
         run: ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64 --stacktrace --no-configuration-cache
