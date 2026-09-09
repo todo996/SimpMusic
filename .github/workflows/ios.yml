@@ -33,6 +33,7 @@ jobs:
           git -C core apply --whitespace=nowarn ../scripts/ios/core_crypto_override.patch
           git -C core apply --whitespace=nowarn ../scripts/ios/core_avplayer_override.patch
           git -C core apply --whitespace=nowarn ../scripts/ios/core_rate_override.patch
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_cache_override.patch
           python3 scripts/ios/prepare_kmp.py
           python3 scripts/ios/prepare_compose_kmp.py
 
