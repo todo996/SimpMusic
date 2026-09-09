@@ -188,7 +188,21 @@ jobs:
           test -f "$SIM_APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
           xcrun simctl install "$DEVICE_ID" "$SIM_APP"
           set +e
-          xcrun simctl launch "$DEVICE_ID" com.maxrave.simpmusic.ios > build/simctl-launch.log 2>&1
+          python3 - "$DEVICE_ID" > build/simctl-launch.log 2>&1 <<'PY'
+          import subprocess
+          import sys
+
+          try:
+              result = subprocess.run(
+                  ["xcrun", "simctl", "launch", sys.argv[1], "com.maxrave.simpmusic.ios"],
+                  check=False,
+                  timeout=30,
+              )
+              raise SystemExit(result.returncode)
+          except subprocess.TimeoutExpired:
+              print("simctl launch timed out", flush=True)
+              raise SystemExit(124)
+          PY
           LAUNCH_STATUS=$?
           sleep 15
           if xcrun simctl spawn "$DEVICE_ID" ps -A | grep -q '[S]impMusic'; then
@@ -196,11 +210,38 @@ jobs:
           else
               APP_RUNNING=0
           fi
-          xcrun simctl terminate "$DEVICE_ID" com.maxrave.simpmusic.ios || true
+          python3 - "$DEVICE_ID" <<'PY'
+          import subprocess
+          import sys
+
+          try:
+              subprocess.run(
+                  ["xcrun", "simctl", "terminate", sys.argv[1], "com.maxrave.simpmusic.ios"],
+                  check=False,
+                  timeout=15,
+              )
+          except subprocess.TimeoutExpired:
+              print("simctl terminate timed out", flush=True)
+          PY
           set -e
-          xcrun simctl spawn "$DEVICE_ID" log show --last 3m --style compact \
-            --predicate 'process == "SimpMusic" OR eventMessage CONTAINS[c] "SimpMusic"' \
-            > build/simctl-system.log 2>&1 || true
+          python3 - "$DEVICE_ID" > build/simctl-system.log 2>&1 <<'PY'
+          import subprocess
+          import sys
+
+          try:
+              result = subprocess.run(
+                  [
+                      "xcrun", "simctl", "spawn", sys.argv[1], "log", "show",
+                      "--last", "1m", "--style", "compact",
+                      "--predicate", 'process == "SimpMusic" OR eventMessage CONTAINS[c] "SimpMusic"',
+                  ],
+                  check=False,
+                  timeout=25,
+              )
+              raise SystemExit(result.returncode)
+          except subprocess.TimeoutExpired:
+              print("simctl log show timed out after 25 seconds", flush=True)
+          PY
           cat build/simctl-launch.log
           if [ "$LAUNCH_STATUS" -ne 0 ]; then
               echo "Simulator launch command failed with status $LAUNCH_STATUS"
