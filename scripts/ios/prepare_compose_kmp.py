@@ -179,7 +179,9 @@ def patch_shared(text: str) -> str:
 rewrite(shared, patch_shared)
 
 # Ensure Okio is directly available to composeApp commonMain and opt the Native
-# compile into the Material3 experimental APIs already used by the shared UI.
+# compile into both standard and Expressive Material3 experimental APIs used by
+# the shared UI. MaterialExpressiveTheme and LinearWavyProgressIndicator use
+# ExperimentalMaterial3ExpressiveApi, not ExperimentalMaterial3Api.
 build = APP / "build.gradle.kts"
 def patch_build(text: str) -> str:
     if "implementation(libs.okio)" not in text:
@@ -190,10 +192,13 @@ def patch_build(text: str) -> str:
             marker = "            implementation(libs.ktor.client.cio)\n"
             text = text.replace(marker, marker + "            implementation(libs.okio)\n", 1)
 
-    opt_in = '        freeCompilerArgs.add("-opt-in=androidx.compose.material3.ExperimentalMaterial3Api")\n'
-    if opt_in not in text:
-        marker = '        freeCompilerArgs.add("-Xexpect-actual-classes")\n'
-        if marker in text:
+    opt_ins = (
+        '        freeCompilerArgs.add("-opt-in=androidx.compose.material3.ExperimentalMaterial3Api")\n',
+        '        freeCompilerArgs.add("-opt-in=androidx.compose.material3.ExperimentalMaterial3ExpressiveApi")\n',
+    )
+    marker = '        freeCompilerArgs.add("-Xexpect-actual-classes")\n'
+    for opt_in in opt_ins:
+        if opt_in not in text and marker in text:
             text = text.replace(marker, marker + opt_in, 1)
     return text
 rewrite(build, patch_build)
