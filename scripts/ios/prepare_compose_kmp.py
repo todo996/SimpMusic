@@ -172,7 +172,12 @@ def patch_shared(text: str) -> str:
 rewrite(shared, patch_shared)
 
 # Ensure Okio is directly available to composeApp commonMain and opt into the
-# Material3 experimental APIs already used by the shared UI.
+# Material3 experimental APIs already used by the shared UI. Also enforce the
+# complete Compose core generation at dependency-resolution time: version-catalog
+# pins alone are not enough because libraries such as UI effects can request a
+# newer Compose runtime transitively, and Gradle normally selects the highest
+# requested version. That reintroduced UIViewLayoutRegion in run #36 even though
+# the catalog had been rewritten to 1.10.3.
 build = APP / "build.gradle.kts"
 def patch_build(text: str) -> str:
     if "implementation(libs.okio)" not in text:
@@ -191,6 +196,36 @@ def patch_build(text: str) -> str:
     for opt_in in opt_ins:
         if opt_in not in text and marker in text:
             text = text.replace(marker, marker + opt_in, 1)
+
+    guard_marker = "// iOS18_COMPOSE_RESOLUTION_GUARD"
+    if guard_marker not in text:
+        text += '''
+
+// iOS18_COMPOSE_RESOLUTION_GUARD
+// Keep transitive libraries from silently upgrading Compose to 1.11/1.12.
+configurations.configureEach {
+    resolutionStrategy.eachDependency {
+        when (requested.group) {
+            "org.jetbrains.compose.runtime",
+            "org.jetbrains.compose.ui",
+            "org.jetbrains.compose.foundation",
+            "org.jetbrains.compose.animation",
+            "org.jetbrains.compose.material" -> {
+                useVersion("1.10.3")
+                because("iOS 18 build must not resolve Compose 1.11+ UIKit runtime symbols")
+            }
+            "org.jetbrains.compose.material3" -> {
+                useVersion("1.10.0-alpha05")
+                because("Material3 generation compatible with Compose Multiplatform 1.10.3")
+            }
+            "org.jetbrains.compose.material3.adaptive" -> {
+                useVersion("1.3.0-alpha02")
+                because("Material3 Adaptive generation compatible with Compose Multiplatform 1.10.3")
+            }
+        }
+    }
+}
+'''
     return text
 rewrite(build, patch_build)
 
