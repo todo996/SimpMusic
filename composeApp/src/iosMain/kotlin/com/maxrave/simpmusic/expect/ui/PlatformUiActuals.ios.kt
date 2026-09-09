@@ -1,6 +1,6 @@
 package com.maxrave.simpmusic.expect.ui
 
-import androidx.compose.foundation.Box
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material3.ColorScheme
 import androidx.compose.runtime.Composable
