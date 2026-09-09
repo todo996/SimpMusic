@@ -117,6 +117,10 @@ kotlin {
             api(projects.common)
             api(projects.domain)
             implementation(projects.data)
+            // Use the platform Ktor engine (Darwin on iOS, OkHttp elsewhere) for Compose-owned
+            // image/network loaders. Directly constructing CIO here crashes during the first
+            // iOS composition because CIO is not the Apple engine used by the shared KMP layer.
+            implementation(projects.ktorExt)
 
             // Last.fm (gated: real scrobbler for full builds, no-op stub for FOSS builds).
             // `api` rather than `implementation` so :androidApp can hand it the credentials from
