@@ -38,7 +38,7 @@ jobs:
         run: ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64 --stacktrace --no-configuration-cache
 
       - name: Build device framework
-        run: ./gradlew :composeApp:linkReleaseFrameworkIosArm64 --stacktrace --no-configuration-cache
+        run: ./gradlew :composeApp:linkDebugFrameworkIosArm64 --stacktrace --no-configuration-cache
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -50,13 +50,13 @@ jobs:
 
       - name: Build unsigned app
         run: |
-          xcodebuild -project iosApp/SimpMusic.xcodeproj -scheme SimpMusic -configuration Release -sdk iphoneos -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+          xcodebuild -project iosApp/SimpMusic.xcodeproj -scheme SimpMusic -configuration Debug -sdk iphoneos -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 
       - name: Package IPA
         run: |
           rm -rf build/Payload
           mkdir -p build/Payload
-          cp -R build/ios/Build/Products/Release-iphoneos/SimpMusic.app build/Payload/
+          cp -R build/ios/Build/Products/Debug-iphoneos/SimpMusic.app build/Payload/
           cd build
           zip -qry SimpMusic-unsigned.ipa Payload
 
