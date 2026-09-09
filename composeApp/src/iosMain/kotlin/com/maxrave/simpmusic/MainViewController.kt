@@ -14,7 +14,15 @@ fun MainViewController() = run {
     initializeIosApp()
     // Resolve the root graph before Compose starts. This keeps missing iOS bindings visible as a
     // launch error with a concrete dependency path instead of an opaque composition failure.
-    getKoin().get<SharedViewModel>()
+    try {
+        getKoin().get<SharedViewModel>()
+    } catch (error: Throwable) {
+        // Kotlin/Native otherwise only prints Koin's outer InstanceCreationException before
+        // terminating the process. Keep the complete cause chain in the simulator/device log so
+        // a sideload launch failure can be fixed from evidence rather than guessed at.
+        println("SimpMusic iOS startup failed: ${error.stackTraceToString()}")
+        throw error
+    }
     println("SimpMusic iOS startup: Koin ready")
     ComposeUIViewController { App() }
 }
