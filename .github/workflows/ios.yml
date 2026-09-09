@@ -199,9 +199,17 @@ jobs:
           if kill -0 "$LAUNCH_PID" 2>/dev/null; then
               if [ "$APP_RUNNING" -eq 1 ]; then
                   xcrun simctl terminate "$DEVICE_ID" com.maxrave.simpmusic.ios || true
+                  # `simctl launch --console` can keep its console client open after the
+                  # application has been terminated. The app has already passed the liveness
+                  # check above, so stop only that client and do not turn a passing launch into a
+                  # 60-minute workflow timeout.
+                  kill "$LAUNCH_PID" 2>/dev/null || true
+                  wait "$LAUNCH_PID" 2>/dev/null || true
+                  LAUNCH_STATUS=0
+              else
+                  wait "$LAUNCH_PID" 2>/dev/null
+                  LAUNCH_STATUS=$?
               fi
-              wait "$LAUNCH_PID" 2>/dev/null
-              LAUNCH_STATUS=$?
           else
               wait "$LAUNCH_PID" 2>/dev/null
               LAUNCH_STATUS=$?
