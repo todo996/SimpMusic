@@ -55,23 +55,16 @@ jobs:
       - name: Locate Compose iOS resources
         run: |
           set -euo pipefail
-          RESOURCE_BASE="$GITHUB_WORKSPACE/composeApp/build/generated/compose/resourceGenerator/assembledResources"
-          SIM_RESOURCE_ROOT=$(find "$RESOURCE_BASE" -type d -path '*iosSimulatorArm64Main/composeResources' -print -quit)
-          DEVICE_RESOURCE_ROOT=$(find "$RESOURCE_BASE" -type d -path '*iosArm64Main/composeResources' -print -quit)
-          if [ -z "$SIM_RESOURCE_ROOT" ]; then
-            SIM_RESOURCE_ROOT=$(find "$RESOURCE_BASE" -type d -name composeResources -print -quit)
-          fi
-          if [ -z "$DEVICE_RESOURCE_ROOT" ]; then
-            DEVICE_RESOURCE_ROOT="$SIM_RESOURCE_ROOT"
-          fi
-          if [ -z "$SIM_RESOURCE_ROOT" ] || [ -z "$DEVICE_RESOURCE_ROOT" ]; then
-            echo "ERROR: assembled Compose iOS resources were not found under $RESOURCE_BASE"
+          RESOURCE_FILE=$(find "$GITHUB_WORKSPACE/composeApp/build" -type f \
+            -path '*/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr' \
+            -print -quit)
+          if [ -z "$RESOURCE_FILE" ]; then
+            echo 'ERROR: generated Compose resource strings.commonMain.cvr was not found'
             exit 1
           fi
-          test -f "$SIM_RESOURCE_ROOT/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
-          test -f "$DEVICE_RESOURCE_ROOT/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
-          echo "COMPOSE_SIM_RESOURCE_ROOT=$SIM_RESOURCE_ROOT" >> "$GITHUB_ENV"
-          echo "COMPOSE_DEVICE_RESOURCE_ROOT=$DEVICE_RESOURCE_ROOT" >> "$GITHUB_ENV"
+          RESOURCE_ROOT=$(dirname "$(dirname "$(dirname "$RESOURCE_FILE")")")
+          test -f "$RESOURCE_ROOT/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
+          echo "COMPOSE_RESOURCE_ROOT=$RESOURCE_ROOT" >> "$GITHUB_ENV"
 
       - name: Reject iOS 26-only runtime symbols
         run: |
@@ -188,7 +181,7 @@ jobs:
           SIM_APP=build/ios-simulator/Build/Products/Debug-iphonesimulator/SimpMusic.app
           test -x "$SIM_APP/SimpMusic"
           mkdir -p "$SIM_APP/compose-resources"
-          cp -R "$COMPOSE_SIM_RESOURCE_ROOT" "$SIM_APP/compose-resources/composeResources"
+          cp -R "$COMPOSE_RESOURCE_ROOT" "$SIM_APP/compose-resources/"
           test -f "$SIM_APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
           xcrun simctl install "$DEVICE_ID" "$SIM_APP"
           set +e
@@ -234,7 +227,7 @@ jobs:
           test -x "$APP/SimpMusic"
           test -f "$APP/Assets.car"
           mkdir -p "$APP/compose-resources"
-          cp -R "$COMPOSE_DEVICE_RESOURCE_ROOT" "$APP/compose-resources/composeResources"
+          cp -R "$COMPOSE_RESOURCE_ROOT" "$APP/compose-resources/"
           test -f "$APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
           test ! -e "$APP/SimpMusic.debug.dylib"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' "$APP/Info.plist" >/dev/null
