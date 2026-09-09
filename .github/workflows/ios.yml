@@ -188,18 +188,10 @@ jobs:
           test -f "$SIM_APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
           xcrun simctl install "$DEVICE_ID" "$SIM_APP"
           set +e
-          xcrun simctl launch --console "$DEVICE_ID" com.maxrave.simpmusic.ios > build/simctl-launch.log 2>&1 &
-          LAUNCH_PID=$!
-          sleep 15
-          if kill -0 "$LAUNCH_PID" 2>/dev/null; then
-              kill "$LAUNCH_PID" 2>/dev/null || true
-              wait "$LAUNCH_PID" 2>/dev/null || true
-              LAUNCH_STATUS=0
-          else
-              wait "$LAUNCH_PID"
-              LAUNCH_STATUS=$?
-          fi
+          xcrun simctl launch "$DEVICE_ID" com.maxrave.simpmusic.ios > build/simctl-launch.log 2>&1
+          LAUNCH_STATUS=$?
           set -e
+          sleep 15
           xcrun simctl spawn "$DEVICE_ID" log show --last 3m --style compact \
             --predicate 'process == "SimpMusic" OR eventMessage CONTAINS[c] "SimpMusic"' \
             > build/simctl-system.log 2>&1 || true

@@ -379,10 +379,16 @@ class SharedViewModel(
                             )
                     }
                     state.mediaItem.let { now ->
-                        _canvas.value = null
-                        getLikeStatus(now.mediaId)
-                        getSongInfo(now.mediaId)
-                        getFormat(now.mediaId)
+                        // The iOS player publishes an empty initial state before a queue has
+                        // been restored. Do not resolve a YouTube song until a real media id is
+                        // available: an empty id makes the `next` endpoint return HTTP 400 and
+                        // can surface as an uncaught composition error during app startup.
+                        if (now.mediaId.isNotBlank()) {
+                            _canvas.value = null
+                            getLikeStatus(now.mediaId)
+                            getSongInfo(now.mediaId)
+                            getFormat(now.mediaId)
+                        }
                         _nowPlayingScreenData.update {
                             it.copy(
                                 thumbnailURL = now.metadata.artworkUri,
@@ -570,7 +576,7 @@ class SharedViewModel(
 
     private fun getLikeStatus(videoId: String?) {
         viewModelScope.launch {
-            if (videoId != null) {
+            if (!videoId.isNullOrBlank()) {
                 _likeStatus.value = false
                 songRepository.getLikeStatus(videoId).collectLatest { status ->
                     _likeStatus.value = status
@@ -1029,7 +1035,7 @@ class SharedViewModel(
         songInfoJob?.cancel()
         songInfoJob =
             viewModelScope.launch {
-                if (mediaId != null) {
+                if (!mediaId.isNullOrBlank()) {
                     songRepository.getSongInfo(mediaId).collect { song ->
                         _nowPlayingScreenData.update {
                             it.copy(
