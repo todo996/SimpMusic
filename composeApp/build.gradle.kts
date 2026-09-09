@@ -56,15 +56,15 @@ kotlin {
         }
     }
 
-//    listOf(
-//        iosArm64(),
-//        iosSimulatorArm64()
-//    ).forEach { iosTarget ->
-//        iosTarget.binaries.framework {
-//            baseName = "ComposeApp"
-//            isStatic = true
-//        }
-//    }
+    listOf(
+        iosArm64(),
+        iosSimulatorArm64(),
+    ).forEach { iosTarget ->
+        iosTarget.binaries.framework {
+            baseName = "ComposeApp"
+            isStatic = true
+        }
+    }
 
     jvm()
 
@@ -113,8 +113,6 @@ kotlin {
             implementation(libs.compose.material3.adaptive)
             implementation(libs.compose.material.ripple)
 
-            implementation(libs.ui.tooling.preview)
-
             // Other module
             api(projects.common)
             api(projects.domain)
@@ -137,7 +135,7 @@ kotlin {
 
             // Coil
             api(libs.coil.compose)
-            api(libs.coil.network.okhttp)
+            api(libs.coil.network.ktor3)
             api(libs.kmpalette.core)
             api(libs.kmpalette.network)
             implementation(libs.materialkolor)
@@ -180,6 +178,10 @@ kotlin {
         }
         commonTest.dependencies {
             implementation(libs.kotlin.test)
+        }
+        jvmMain.dependencies {
+            // DesktopApp installs the OkHttp-backed Coil factory explicitly.
+            implementation(libs.coil.network.okhttp)
         }
         jvmMain.dependencies {
             // Desktop app entry (main.kt), jpackage/Conveyor

@@ -1,0 +1,2528 @@
+diff --git a/.gitignore b/.gitignore
+index 78afcaa..c73605a 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -26,5 +26,8 @@ replay_pid*
+ # Kotlin Gradle plugin data, see https://kotlinlang.org/docs/whatsnew20.html#new-directory-for-kotlin-data-in-gradle-projects
+ .kotlin/
+ 
++# Gradle build outputs
++**/build/
++
+ # OMC (oh-my-claudecode) local state
+-/.omc/
+\ No newline at end of file
++/.omc/
+diff --git a/data/build.gradle.kts b/data/build.gradle.kts
+index 4d1d08f..1037e44 100644
+--- a/data/build.gradle.kts
++++ b/data/build.gradle.kts
+@@ -75,6 +75,7 @@ kotlin {
+                 implementation(projects.autoEqService)
+                 implementation(projects.lyricsService)
+                 implementation(projects.spotify)
++                implementation(projects.soundcloud)
+                 implementation(projects.kotlinYtmusicScraper)
+                 implementation(projects.kizzy)
+                 implementation(projects.listenTogether)
+@@ -151,4 +152,4 @@ dependencies {
+ 
+ tasks.withType<CompileArtProfileTask> {
+     enabled = false
+-}
+\ No newline at end of file
++}
+diff --git a/data/src/commonMain/kotlin/com/maxrave/data/di/DatabaseModule.kt b/data/src/commonMain/kotlin/com/maxrave/data/di/DatabaseModule.kt
+index 1f6c05f..ef156b7 100644
+--- a/data/src/commonMain/kotlin/com/maxrave/data/di/DatabaseModule.kt
++++ b/data/src/commonMain/kotlin/com/maxrave/data/di/DatabaseModule.kt
+@@ -14,6 +14,7 @@ import com.maxrave.data.db.getDatabaseBuilder
+ import com.maxrave.domain.manager.DataStoreManager
+ import com.maxrave.kotlinytmusicscraper.YouTube
+ import com.maxrave.spotify.Spotify
++import com.maxrave.soundcloud.SoundCloudClient
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.IO
+ import org.koin.dsl.module
+@@ -67,6 +68,10 @@ val databaseModule =
+             Spotify()
+         }
+ 
++        single(createdAtStart = true) {
++            SoundCloudClient(get())
++        }
++
+         single(createdAtStart = true) {
+             AiClient()
+         }
+@@ -80,4 +85,4 @@ val databaseModule =
+         single {
+             AutoEq()
+         }
+-    }
+\ No newline at end of file
++    }
+diff --git a/data/src/commonMain/kotlin/com/maxrave/data/di/RepositoryModule.kt b/data/src/commonMain/kotlin/com/maxrave/data/di/RepositoryModule.kt
+index af967dd..8a55eab 100644
+--- a/data/src/commonMain/kotlin/com/maxrave/data/di/RepositoryModule.kt
++++ b/data/src/commonMain/kotlin/com/maxrave/data/di/RepositoryModule.kt
+@@ -98,7 +98,7 @@ val repositoryModule =
+         }
+ 
+         single<SearchRepository>(createdAtStart = true) {
+-            SearchRepositoryImpl(get(), get())
++            SearchRepositoryImpl(get(), get(), get())
+         }
+ 
+         single<SongRepository>(createdAtStart = true) {
+@@ -106,7 +106,7 @@ val repositoryModule =
+         }
+ 
+         single<StreamRepository>(createdAtStart = true) {
+-            StreamRepositoryImpl(get(), get())
++            StreamRepositoryImpl(get(), get(), get())
+         }
+ 
+         single<UpdateRepository>(createdAtStart = true) {
+@@ -116,4 +116,4 @@ val repositoryModule =
+         single<AnalyticsRepository>(createdAtStart = true) {
+             AnalyticsRepositoryImpl(get())
+         }
+-    }
+\ No newline at end of file
++    }
+diff --git a/data/src/commonMain/kotlin/com/maxrave/data/repository/SearchRepositoryImpl.kt b/data/src/commonMain/kotlin/com/maxrave/data/repository/SearchRepositoryImpl.kt
+index 7a3d7b5..58edf85 100644
+--- a/data/src/commonMain/kotlin/com/maxrave/data/repository/SearchRepositoryImpl.kt
++++ b/data/src/commonMain/kotlin/com/maxrave/data/repository/SearchRepositoryImpl.kt
+@@ -19,7 +19,11 @@ import com.maxrave.domain.repository.SearchRepository
+ import com.maxrave.domain.utils.Resource
+ import com.maxrave.kotlinytmusicscraper.YouTube
+ import com.maxrave.logger.Logger
++import com.maxrave.soundcloud.SoundCloudClient
++import com.maxrave.soundcloud.SoundCloudTrack
+ import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.async
++import kotlinx.coroutines.coroutineScope
+ import kotlinx.coroutines.flow.Flow
+ import kotlinx.coroutines.flow.flow
+ import kotlinx.coroutines.flow.flowOn
+@@ -28,6 +32,7 @@ import kotlinx.coroutines.withContext
+ internal class SearchRepositoryImpl(
+     private val localDataSource: LocalDataSource,
+     private val youTube: YouTube,
++    private val soundCloud: SoundCloudClient,
+ ) : SearchRepository {
+     override fun getSearchHistory(): Flow<List<SearchHistory>> =
+         flow {
+@@ -46,40 +51,65 @@ internal class SearchRepositoryImpl(
+ 
+     override fun getSearchDataSong(query: String): Flow<Resource<ArrayList<SongsResult>>> =
+         flow {
+-            runCatching {
+-                youTube
+-                    .search(query, YouTube.SearchFilter.FILTER_SONG)
+-                    .onSuccess { result ->
+-                        val listSongs: ArrayList<SongsResult> = arrayListOf()
+-                        var countinueParam = result.continuation
+-                        parseSearchSong(result).let { list ->
+-                            listSongs.addAll(list)
+-                        }
+-                        var count = 0
+-                        while (count < 2 && countinueParam != null) {
+-                            youTube
+-                                .searchContinuation(countinueParam)
+-                                .onSuccess { values ->
+-                                    parseSearchSong(values).let { list ->
+-                                        listSongs.addAll(list)
+-                                    }
+-                                    count++
+-                                    countinueParam = values.continuation
+-                                }.onFailure {
+-                                    Logger.e("Continue", "Error: ${it.message}")
+-                                    countinueParam = null
+-                                    count++
+-                                }
+-                        }
+-
+-                        emit(Resource.Success<ArrayList<SongsResult>>(listSongs))
+-                    }.onFailure { e ->
+-                        Logger.d("Search", "Error: ${e.message}")
+-                        emit(Resource.Error<ArrayList<SongsResult>>(e.message.toString()))
++            coroutineScope {
++                // Provider failures are isolated: YouTube remains fully usable if SoundCloud
++                // rotates its web client id or temporarily rejects the public endpoint.
++                val soundCloudDeferred = async {
++                    soundCloud.searchTracks(query, limit = 20).getOrElse {
++                        Logger.d("SoundCloud", "Search unavailable: ${it.message}")
++                        emptyList()
+                     }
++                }
++                val youtubeResult = youTube.search(query, YouTube.SearchFilter.FILTER_SONG)
++                val soundCloudTracks = soundCloudDeferred.await()
++                if (youtubeResult.isSuccess) {
++                    val listSongs: ArrayList<SongsResult> = arrayListOf()
++                    var continuation = youtubeResult.getOrNull()?.continuation
++                    youtubeResult.getOrNull()?.let { listSongs.addAll(parseSearchSong(it)) }
++                    var count = 0
++                    while (count < 2 && continuation != null) {
++                        youTube.searchContinuation(continuation)
++                            .onSuccess { values ->
++                                listSongs.addAll(parseSearchSong(values))
++                                continuation = values.continuation
++                            }.onFailure {
++                                Logger.e("Continue", "Error: ${it.message}")
++                                continuation = null
++                            }
++                        count++
++                    }
++                    listSongs.addAll(soundCloudTracks.map { it.toSongsResult() })
++                    emit(Resource.Success(listSongs))
++                } else if (soundCloudTracks.isNotEmpty()) {
++                    emit(Resource.Success(ArrayList(soundCloudTracks.map { it.toSongsResult() })))
++                } else {
++                    emit(Resource.Error(youtubeResult.exceptionOrNull()?.message ?: "Search failed"))
++                }
+             }
+         }.flowOn(Dispatchers.IO)
+ 
++    private fun SoundCloudTrack.toSongsResult(): SongsResult =
++        SongsResult(
++            album = null,
++            artists = listOf(com.maxrave.domain.data.model.searchResult.songs.Artist(id = null, name = artist)),
++            category = "SoundCloud",
++            duration = durationMs.toDurationText(),
++            durationSeconds = (durationMs / 1000L).toInt().takeIf { it > 0 },
++            feedbackTokens = null,
++            isExplicit = false,
++            resultType = "SOUNDCLOUD",
++            thumbnails = artworkUrl?.let { listOf(com.maxrave.domain.data.model.searchResult.songs.Thumbnail(500, it, 500)) },
++            title = title,
++            videoId = id,
++            videoType = "SOUNDCLOUD",
++            year = "",
++        )
++
++    private fun Long.toDurationText(): String {
++        val totalSeconds = (this / 1000L).toInt()
++        return "${(totalSeconds / 60).toString().padStart(2, '0')}:${(totalSeconds % 60).toString().padStart(2, '0')}"
++    }
++
+     override fun getSearchDataVideo(query: String): Flow<Resource<ArrayList<VideosResult>>> =
+         flow {
+             runCatching {
+@@ -306,4 +336,4 @@ internal class SearchRepositoryImpl(
+                     }
+             }
+         }.flowOn(Dispatchers.IO)
+-}
+\ No newline at end of file
++}
+diff --git a/data/src/commonMain/kotlin/com/maxrave/data/repository/StreamRepositoryImpl.kt b/data/src/commonMain/kotlin/com/maxrave/data/repository/StreamRepositoryImpl.kt
+index e81c349..cacd457 100644
+--- a/data/src/commonMain/kotlin/com/maxrave/data/repository/StreamRepositoryImpl.kt
++++ b/data/src/commonMain/kotlin/com/maxrave/data/repository/StreamRepositoryImpl.kt
+@@ -20,6 +20,7 @@ import com.maxrave.kotlinytmusicscraper.YouTube
+ import com.maxrave.kotlinytmusicscraper.models.MediaType
+ import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
+ import com.maxrave.logger.Logger
++import com.maxrave.soundcloud.SoundCloudClient
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.IO
+ import kotlinx.coroutines.flow.Flow
+@@ -31,6 +32,7 @@ import kotlinx.coroutines.withContext
+ internal class StreamRepositoryImpl(
+     private val localDataSource: LocalDataSource,
+     private val youTube: YouTube,
++    private val soundCloud: SoundCloudClient,
+ ) : StreamRepository {
+     override suspend fun insertNewFormat(newFormat: NewFormatEntity) =
+         withContext(Dispatchers.IO) {
+@@ -44,6 +46,7 @@ internal class StreamRepositoryImpl(
+     override fun getExtractSource(videoId: String): String? = youTube.getExtractSource(videoId)
+ 
+     override suspend fun updateFormat(videoId: String) {
++        if (videoId.startsWith(SoundCloudClient.SOUNDCLOUD_ID_PREFIX)) return
+         localDataSource.getNewFormat(videoId)?.let { oldFormat ->
+             Logger.w("Stream", "oldFormatExpired: ${oldFormat.expiredTime}")
+             Logger.w("Stream", "now: ${now()}")
+@@ -89,7 +92,12 @@ internal class StreamRepositoryImpl(
+         isVideo: Boolean,
+         muxed: Boolean,
+     ): Flow<String?> =
+-        flow {
++        if (videoId.startsWith(SoundCloudClient.SOUNDCLOUD_ID_PREFIX)) {
++            flow {
++                emit(soundCloud.resolveStream(videoId).getOrNull())
++            }
++        } else {
++            flow {
+             val itag =
+                 if (isDownloading) {
+                     QUALITY.itagOf(dataStoreManager.downloadQuality.first())
+@@ -290,7 +298,8 @@ internal class StreamRepositoryImpl(
+                     Logger.e("Stream", "Error: ${it.message}")
+                     emit(null)
+                 }
+-        }.flowOn(Dispatchers.IO)
++            }.flowOn(Dispatchers.IO)
++        }
+ 
+     override fun initPlayback(
+         playback: String,
+@@ -387,4 +396,4 @@ internal class StreamRepositoryImpl(
+             }
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/data/src/iosArm64Main/kotlin/com/maxrave/data/di/loader/Loader.iosArm64.kt b/data/src/iosArm64Main/kotlin/com/maxrave/data/di/loader/Loader.iosArm64.kt
+deleted file mode 100644
+index 42b5184..0000000
+--- a/data/src/iosArm64Main/kotlin/com/maxrave/data/di/loader/Loader.iosArm64.kt
++++ /dev/null
+@@ -1,4 +0,0 @@
+-package com.maxrave.data.di.loader
+-
+-actual fun loadMediaService() {
+-}
+\ No newline at end of file
+diff --git a/data/src/iosArm64Main/kotlin/com/maxrave/data/mediaservice/ExpectMediaHandler.iosArm64.kt b/data/src/iosArm64Main/kotlin/com/maxrave/data/mediaservice/ExpectMediaHandler.iosArm64.kt
+deleted file mode 100644
+index da32277..0000000
+--- a/data/src/iosArm64Main/kotlin/com/maxrave/data/mediaservice/ExpectMediaHandler.iosArm64.kt
++++ /dev/null
+@@ -1,12 +0,0 @@
+-package com.maxrave.data.mediaservice
+-
+-actual fun createMediaServiceHandler(
+-    dataStoreManager: com.maxrave.domain.manager.DataStoreManager,
+-    songRepository: com.maxrave.domain.repository.SongRepository,
+-    streamRepository: com.maxrave.domain.repository.StreamRepository,
+-    localPlaylistRepository: com.maxrave.domain.repository.LocalPlaylistRepository,
+-    analyticsRepository: com.maxrave.domain.repository.AnalyticsRepository,
+-    coroutineScope: kotlinx.coroutines.CoroutineScope,
+-): com.maxrave.domain.mediaservice.handler.MediaPlayerHandler {
+-    TODO("Not yet implemented")
+-}
+\ No newline at end of file
+diff --git a/data/src/iosMain/kotlin/com/maxrave/data/di/loader/Loader.ios.kt b/data/src/iosMain/kotlin/com/maxrave/data/di/loader/Loader.ios.kt
+index 42b5184..fdba2d4 100644
+--- a/data/src/iosMain/kotlin/com/maxrave/data/di/loader/Loader.ios.kt
++++ b/data/src/iosMain/kotlin/com/maxrave/data/di/loader/Loader.ios.kt
+@@ -1,4 +1,28 @@
+ package com.maxrave.data.di.loader
+ 
++import com.maxrave.common.Config
++import com.maxrave.data.mediaservice.IosAvPlayerAdapter
++import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.SupervisorJob
++import org.koin.core.context.loadKoinModules
++import org.koin.core.qualifier.named
++import org.koin.dsl.module
++
+ actual fun loadMediaService() {
+-}
+\ No newline at end of file
++    loadKoinModules(
++        module {
++            single<CoroutineScope>(named(Config.SERVICE_SCOPE), createdAtStart = true) {
++                CoroutineScope(SupervisorJob() + Dispatchers.Main)
++            }
++            single<MediaPlayerInterface>(createdAtStart = true) {
++                IosAvPlayerAdapter(
++                    streamRepository = get(),
++                    dataStoreManager = get(),
++                    coroutineScope = get(named(Config.SERVICE_SCOPE)),
++                )
++            }
++        },
++    )
++}
+diff --git a/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/ExpectMediaHandler.ios.kt b/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/ExpectMediaHandler.ios.kt
+index da32277..9146961 100644
+--- a/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/ExpectMediaHandler.ios.kt
++++ b/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/ExpectMediaHandler.ios.kt
+@@ -1,12 +1,26 @@
+ package com.maxrave.data.mediaservice
+ 
++import com.maxrave.domain.manager.DataStoreManager
++import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
++import com.maxrave.domain.repository.AnalyticsRepository
++import com.maxrave.domain.repository.LocalPlaylistRepository
++import com.maxrave.domain.repository.SongRepository
++import com.maxrave.domain.repository.StreamRepository
++import kotlinx.coroutines.CoroutineScope
++
+ actual fun createMediaServiceHandler(
+-    dataStoreManager: com.maxrave.domain.manager.DataStoreManager,
+-    songRepository: com.maxrave.domain.repository.SongRepository,
+-    streamRepository: com.maxrave.domain.repository.StreamRepository,
+-    localPlaylistRepository: com.maxrave.domain.repository.LocalPlaylistRepository,
+-    analyticsRepository: com.maxrave.domain.repository.AnalyticsRepository,
+-    coroutineScope: kotlinx.coroutines.CoroutineScope,
+-): com.maxrave.domain.mediaservice.handler.MediaPlayerHandler {
+-    TODO("Not yet implemented")
+-}
+\ No newline at end of file
++    dataStoreManager: DataStoreManager,
++    songRepository: SongRepository,
++    streamRepository: StreamRepository,
++    localPlaylistRepository: LocalPlaylistRepository,
++    analyticsRepository: AnalyticsRepository,
++    coroutineScope: CoroutineScope,
++): MediaPlayerHandler =
++    IosMediaPlayerHandler(
++        dataStoreManager = dataStoreManager,
++        songRepository = songRepository,
++        streamRepository = streamRepository,
++        localPlaylistRepository = localPlaylistRepository,
++        analyticsRepository = analyticsRepository,
++        coroutineScope = coroutineScope,
++    )
+diff --git a/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/IosAvPlayerAdapter.kt b/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/IosAvPlayerAdapter.kt
+new file mode 100644
+index 0000000..c465069
+--- /dev/null
++++ b/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/IosAvPlayerAdapter.kt
+@@ -0,0 +1,434 @@
++package com.maxrave.data.mediaservice
++
++import com.maxrave.domain.data.player.GenericMediaItem
++import com.maxrave.domain.data.player.GenericPlaybackParameters
++import com.maxrave.domain.data.player.GenericTracks
++import com.maxrave.domain.data.player.PlayerConstants
++import com.maxrave.domain.data.player.PlayerError
++import com.maxrave.domain.extension.isVideo
++import com.maxrave.domain.manager.DataStoreManager
++import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
++import com.maxrave.domain.mediaservice.player.MediaPlayerListener
++import com.maxrave.domain.repository.StreamRepository
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Job
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.flow.first
++import kotlinx.coroutines.isActive
++import kotlinx.coroutines.launch
++import platform.AVFoundation.AVPlayer
++import platform.AVFoundation.AVPlayerItem
++import platform.CoreMedia.CMTimeGetSeconds
++import platform.CoreMedia.CMTimeMakeWithSeconds
++import platform.Foundation.NSURL
++import kotlin.math.max
++import kotlin.math.min
++
++private const val IOS_STREAM_TAG = "IosAvPlayerAdapter"
++
++/**
++ * Small AVPlayer-backed implementation of the platform-neutral player contract.
++ *
++ * AVPlayer performs the actual HTTP/HLS work on iOS. The adapter deliberately keeps the queue and
++ * the app's GenericMediaItem values in Kotlin, so the existing Compose view models do not need an
++ * iOS-only media model. A stream repository is used for YouTube/SoundCloud IDs and direct HTTP(S)
++ * URIs remain a fast path for cached or externally supplied media.
++ */
++class IosAvPlayerAdapter(
++    private val streamRepository: StreamRepository,
++    private val dataStoreManager: DataStoreManager,
++    private val coroutineScope: CoroutineScope,
++) : MediaPlayerInterface {
++    private val avPlayer = AVPlayer()
++    private val listeners = mutableListOf<MediaPlayerListener>()
++    private val mediaItems = mutableListOf<GenericMediaItem>()
++    private var currentIndex = -1
++    private var internalPlayWhenReady = false
++    private var internalShuffle = false
++    private var internalRepeatMode = PlayerConstants.REPEAT_MODE_OFF
++    private var internalVolume = 1f
++    private var internalSleepFadeFactor = 1f
++    private var internalPlaybackParameters = GenericPlaybackParameters.DEFAULT
++    private var internalPlaybackState = PlayerConstants.STATE_IDLE
++    private var currentLoadJob: Job? = null
++    private var pollJob: Job? = null
++    private var endHandledForIndex = -1
++    private var released = false
++
++    override var crossfadeSuppressed: Boolean = false
++    override var albumTrackIds: Set<String> = emptySet()
++    override var skipSilenceEnabled: Boolean = false
++
++    init {
++        pollJob = coroutineScope.launch {
++            while (isActive && !released) {
++                publishSnapshot()
++                maybeAdvanceAtEnd()
++                delay(250)
++            }
++        }
++    }
++
++    override fun play() {
++        internalPlayWhenReady = true
++        avPlayer.play()
++        setPlaybackState(PlayerConstants.STATE_READY)
++    }
++
++    override fun pause() {
++        internalPlayWhenReady = false
++        avPlayer.pause()
++    }
++
++    override fun stop() {
++        internalPlayWhenReady = false
++        avPlayer.pause()
++        setPlaybackState(PlayerConstants.STATE_IDLE)
++    }
++
++    override fun seekTo(positionMs: Long) {
++        if (avPlayer.currentItem == null) return
++        avPlayer.seekToTime(CMTimeMakeWithSeconds(max(0L, positionMs).toDouble() / 1000.0, 1000))
++        notifyListeners { it.onSeeked(currentPosition) }
++    }
++
++    override fun seekTo(
++        mediaItemIndex: Int,
++        positionMs: Long,
++    ) {
++        if (mediaItemIndex !in mediaItems.indices) return
++        selectItem(mediaItemIndex, autoPlay = internalPlayWhenReady, reason = PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_SEEK)
++        coroutineScope.launch {
++            delay(50)
++            seekTo(positionMs)
++        }
++    }
++
++    override fun seekBack() = seekTo(max(0L, currentPosition - 10_000L))
++
++    override fun seekForward() = seekTo(currentPosition + 10_000L)
++
++    override fun seekToNext() {
++        nextIndex()?.let { selectItem(it, autoPlay = true, reason = PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_AUTO) }
++    }
++
++    override fun seekToPrevious() {
++        if (currentPosition > 3_000L) {
++            seekTo(0)
++        } else {
++            seekToPreviousMediaItem()
++        }
++    }
++
++    override fun seekToPreviousMediaItem() {
++        previousIndex()?.let { selectItem(it, autoPlay = true, reason = PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_SEEK) }
++    }
++
++    override fun prepare() {
++        if (currentIndex in mediaItems.indices) resolveAndLoad(mediaItems[currentIndex], internalPlayWhenReady)
++    }
++
++    override fun setMediaItem(mediaItem: GenericMediaItem) {
++        mediaItems.clear()
++        mediaItems += mediaItem
++        currentIndex = 0
++        endHandledForIndex = -1
++        notifyTimelineChanged()
++        resolveAndLoad(mediaItem, internalPlayWhenReady)
++    }
++
++    override fun addMediaItem(mediaItem: GenericMediaItem) {
++        mediaItems += mediaItem
++        if (currentIndex < 0) {
++            currentIndex = 0
++            resolveAndLoad(mediaItem, internalPlayWhenReady)
++        }
++        notifyTimelineChanged()
++    }
++
++    override fun addMediaItem(
++        index: Int,
++        mediaItem: GenericMediaItem,
++    ) {
++        mediaItems.add(index.coerceIn(0, mediaItems.size), mediaItem)
++        if (currentIndex < 0) currentIndex = 0
++        else if (index <= currentIndex) currentIndex++
++        notifyTimelineChanged()
++    }
++
++    override fun removeMediaItem(index: Int) {
++        if (index !in mediaItems.indices) return
++        mediaItems.removeAt(index)
++        when {
++            mediaItems.isEmpty() -> {
++                currentIndex = -1
++                avPlayer.replaceCurrentItemWithPlayerItem(null)
++                setPlaybackState(PlayerConstants.STATE_IDLE)
++            }
++            index < currentIndex -> currentIndex--
++            currentIndex >= mediaItems.size -> currentIndex = mediaItems.lastIndex
++        }
++        notifyTimelineChanged()
++    }
++
++    override fun moveMediaItem(
++        fromIndex: Int,
++        toIndex: Int,
++    ) {
++        if (fromIndex !in mediaItems.indices || toIndex !in mediaItems.indices || fromIndex == toIndex) return
++        val item = mediaItems.removeAt(fromIndex)
++        mediaItems.add(toIndex, item)
++        currentIndex = when {
++            currentIndex == fromIndex -> toIndex
++            fromIndex < currentIndex && toIndex >= currentIndex -> currentIndex - 1
++            fromIndex > currentIndex && toIndex <= currentIndex -> currentIndex + 1
++            else -> currentIndex
++        }
++        notifyTimelineChanged()
++    }
++
++    override fun clearMediaItems() {
++        currentLoadJob?.cancel()
++        mediaItems.clear()
++        currentIndex = -1
++        avPlayer.replaceCurrentItemWithPlayerItem(null)
++        setPlaybackState(PlayerConstants.STATE_IDLE)
++        notifyTimelineChanged()
++    }
++
++    override fun replaceMediaItem(
++        index: Int,
++        mediaItem: GenericMediaItem,
++    ) {
++        if (index !in mediaItems.indices) return
++        mediaItems[index] = mediaItem
++        if (index == currentIndex) resolveAndLoad(mediaItem, internalPlayWhenReady)
++        notifyTimelineChanged()
++    }
++
++    override fun getMediaItemAt(index: Int): GenericMediaItem? = mediaItems.getOrNull(index)
++
++    override fun getCurrentMediaTimeLine(): List<GenericMediaItem> = orderedItems()
++
++    override fun getUnshuffledIndex(shuffledIndex: Int): Int = shuffleOrder().getOrNull(shuffledIndex) ?: -1
++
++    override val isPlaying: Boolean
++        get() = avPlayer.rate > 0.0
++
++    override val currentPosition: Long
++        get() = secondsToMillis(avPlayer.currentTime())
++
++    override val duration: Long
++        get() = avPlayer.currentItem?.let { secondsToMillis(it.duration) } ?: 0L
++
++    override val bufferedPosition: Long
++        get() = max(currentPosition, duration.takeIf { it > 0L } ?: 0L)
++
++    override val bufferedPercentage: Int
++        get() = if (duration <= 0L) 0 else ((bufferedPosition * 100L) / duration).toInt().coerceIn(0, 100)
++
++    override val currentMediaItem: GenericMediaItem?
++        get() = mediaItems.getOrNull(currentIndex)
++
++    override val currentMediaItemIndex: Int
++        get() = currentIndex
++
++    override val mediaItemCount: Int
++        get() = mediaItems.size
++
++    override val contentPosition: Long
++        get() = currentPosition
++
++    override val playbackState: Int
++        get() = internalPlaybackState
++
++    override fun hasNextMediaItem(): Boolean = nextIndex() != null
++
++    override fun hasPreviousMediaItem(): Boolean = previousIndex() != null
++
++    override var shuffleModeEnabled: Boolean
++        get() = internalShuffle
++        set(value) {
++            if (internalShuffle == value) return
++            internalShuffle = value
++            notifyListeners { it.onShuffleModeEnabledChanged(value, orderedItems()) }
++            notifyTimelineChanged()
++        }
++
++    override var repeatMode: Int
++        get() = internalRepeatMode
++        set(value) {
++            internalRepeatMode = value.coerceIn(PlayerConstants.REPEAT_MODE_OFF, PlayerConstants.REPEAT_MODE_ALL)
++            notifyListeners { it.onRepeatModeChanged(internalRepeatMode) }
++        }
++
++    override var playWhenReady: Boolean
++        get() = internalPlayWhenReady
++        set(value) {
++            internalPlayWhenReady = value
++            if (value) play() else pause()
++        }
++
++    override var playbackParameters: GenericPlaybackParameters
++        get() = internalPlaybackParameters
++        set(value) {
++            internalPlaybackParameters = value
++            avPlayer.rate = value.speed
++        }
++
++    override val audioSessionId: Int
++        get() = PlayerConstants.AUDIO_SESSION_ID_UNSET
++
++    override var volume: Float
++        get() = internalVolume
++        set(value) {
++            internalVolume = value.coerceIn(0f, 1f)
++            applyVolume()
++            notifyListeners { it.onVolumeChanged(internalVolume) }
++        }
++
++    override var sleepFadeFactor: Float
++        get() = internalSleepFadeFactor
++        set(value) {
++            internalSleepFadeFactor = value.coerceIn(0f, 1f)
++            applyVolume()
++        }
++
++    override fun addListener(listener: MediaPlayerListener) {
++        if (!listeners.contains(listener)) listeners += listener
++    }
++
++    override fun removeListener(listener: MediaPlayerListener) {
++        listeners -= listener
++    }
++
++    override fun release() {
++        if (released) return
++        released = true
++        currentLoadJob?.cancel()
++        pollJob?.cancel()
++        listeners.clear()
++        avPlayer.pause()
++        avPlayer.replaceCurrentItemWithPlayerItem(null)
++    }
++
++    private fun resolveAndLoad(
++        mediaItem: GenericMediaItem,
++        autoPlay: Boolean,
++    ) {
++        currentLoadJob?.cancel()
++        setPlaybackState(PlayerConstants.STATE_BUFFERING)
++        currentLoadJob = coroutineScope.launch {
++            val uri = mediaItem.uri?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
++                ?: runCatching {
++                    streamRepository
++                        .getStream(dataStoreManager, mediaItem.mediaId, false, mediaItem.isVideo(), false)
++                        .first()
++                }.getOrNull()
++            if (uri.isNullOrBlank()) {
++                setPlaybackState(PlayerConstants.STATE_IDLE)
++                notifyListeners {
++                    it.onPlayerError(PlayerError(0, IOS_STREAM_TAG, "Không tìm thấy luồng phát cho ${mediaItem.metadata.title ?: mediaItem.mediaId}"))
++                }
++                return@launch
++            }
++            val url = NSURL(string = uri) ?: return@launch
++            avPlayer.replaceCurrentItemWithPlayerItem(AVPlayerItem(uRL = url))
++            applyVolume()
++            avPlayer.rate = if (autoPlay) internalPlaybackParameters.speed else 0.0
++            setPlaybackState(PlayerConstants.STATE_READY)
++            notifyListeners { it.onMediaItemTransition(mediaItem, PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) }
++        }
++    }
++
++    private fun selectItem(
++        index: Int,
++        autoPlay: Boolean,
++        reason: Int,
++    ) {
++        if (index !in mediaItems.indices) return
++        currentIndex = index
++        endHandledForIndex = -1
++        resolveAndLoad(mediaItems[index], autoPlay)
++        notifyListeners { it.onMediaItemTransition(mediaItems[index], reason) }
++    }
++
++    private fun nextIndex(): Int? {
++        if (mediaItems.isEmpty() || currentIndex < 0) return null
++        val order = shuffleOrder()
++        val orderIndex = order.indexOf(currentIndex)
++        return when {
++            orderIndex >= 0 && orderIndex < order.lastIndex -> order[orderIndex + 1]
++            internalRepeatMode == PlayerConstants.REPEAT_MODE_ALL -> order.firstOrNull()
++            else -> null
++        }
++    }
++
++    private fun previousIndex(): Int? {
++        if (mediaItems.isEmpty() || currentIndex < 0) return null
++        val order = shuffleOrder()
++        val orderIndex = order.indexOf(currentIndex)
++        return when {
++            orderIndex > 0 -> order[orderIndex - 1]
++            internalRepeatMode == PlayerConstants.REPEAT_MODE_ALL -> order.lastOrNull()
++            else -> null
++        }
++    }
++
++    private fun shuffleOrder(): List<Int> {
++        if (!internalShuffle) return mediaItems.indices.toList()
++        val before = mediaItems.indices.filter { it != currentIndex }
++        return listOfNotNull(currentIndex.takeIf { it in mediaItems.indices }) + before
++    }
++
++    private fun orderedItems(): List<GenericMediaItem> = shuffleOrder().mapNotNull { mediaItems.getOrNull(it) }
++
++    private fun maybeAdvanceAtEnd() {
++        val currentDuration = duration
++        if (!internalPlayWhenReady || currentDuration <= 0L || currentIndex == endHandledForIndex) return
++        if (!isPlaying && currentPosition >= currentDuration - 500L) {
++            endHandledForIndex = currentIndex
++            if (internalRepeatMode == PlayerConstants.REPEAT_MODE_ONE) {
++                selectItem(currentIndex, autoPlay = true, reason = PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_REPEAT)
++            } else {
++                nextIndex()?.let {
++                    selectItem(it, autoPlay = true, reason = PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_AUTO)
++                } ?: run {
++                    internalPlayWhenReady = false
++                    setPlaybackState(PlayerConstants.STATE_ENDED)
++                }
++            }
++        }
++    }
++
++    private fun publishSnapshot() {
++        if (released) return
++        val state = if (isPlaying) PlayerConstants.STATE_READY else internalPlaybackState
++        if (state != internalPlaybackState && state != PlayerConstants.STATE_BUFFERING) setPlaybackState(state)
++        notifyListeners { it.onIsPlayingChanged(isPlaying) }
++    }
++
++    private fun setPlaybackState(state: Int) {
++        if (internalPlaybackState == state) return
++        internalPlaybackState = state
++        notifyListeners { it.onPlaybackStateChanged(state) }
++    }
++
++    private fun notifyTimelineChanged() {
++        val timeline = orderedItems()
++        notifyListeners { it.onTimelineChanged(timeline, "TIMELINE_CHANGE_REASON_PLAYLIST_CHANGED") }
++    }
++
++    private inline fun notifyListeners(action: (MediaPlayerListener) -> Unit) {
++        listeners.toList().forEach(action)
++    }
++
++    private fun applyVolume() {
++        avPlayer.volume = (internalVolume * internalSleepFadeFactor).coerceIn(0f, 1f)
++    }
++
++    private fun secondsToMillis(time: platform.CoreMedia.CMTime): Long {
++        val seconds = CMTimeGetSeconds(time)
++        return if (seconds.isFinite() && seconds > 0.0) (seconds * 1000.0).toLong() else 0L
++    }
++}
+diff --git a/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/IosMediaPlayerHandler.kt b/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/IosMediaPlayerHandler.kt
+new file mode 100644
+index 0000000..04e60a6
+--- /dev/null
++++ b/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/IosMediaPlayerHandler.kt
+@@ -0,0 +1,572 @@
++package com.maxrave.data.mediaservice
++
++import com.maxrave.common.Config
++import com.maxrave.domain.data.entities.NewFormatEntity
++import com.maxrave.domain.data.entities.SongEntity
++import com.maxrave.domain.data.model.browse.album.Track
++import com.maxrave.domain.data.model.mediaService.SponsorSkipSegments
++import com.maxrave.domain.data.player.GenericCastState
++import com.maxrave.domain.data.player.GenericCommandButton
++import com.maxrave.domain.data.player.GenericMediaItem
++import com.maxrave.domain.data.player.PlayerConstants
++import com.maxrave.domain.data.player.PlayerError
++import com.maxrave.domain.extension.toGenericMediaItem
++import com.maxrave.domain.extension.toSongEntity
++import com.maxrave.domain.mediaservice.handler.ControlState
++import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
++import com.maxrave.domain.mediaservice.handler.NowPlayingTrackState
++import com.maxrave.domain.mediaservice.handler.PlayerEvent
++import com.maxrave.domain.mediaservice.handler.PlaylistType
++import com.maxrave.domain.mediaservice.handler.QueueData
++import com.maxrave.domain.mediaservice.handler.RepeatState
++import com.maxrave.domain.mediaservice.handler.SimpleMediaState
++import com.maxrave.domain.mediaservice.handler.SleepTimerState
++import com.maxrave.domain.mediaservice.handler.ToastType
++import com.maxrave.domain.manager.DataStoreManager
++import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
++import com.maxrave.domain.mediaservice.player.MediaPlayerListener
++import com.maxrave.domain.repository.AnalyticsRepository
++import com.maxrave.domain.repository.LocalPlaylistRepository
++import com.maxrave.domain.repository.SongRepository
++import com.maxrave.domain.repository.StreamRepository
++import com.maxrave.domain.utils.Resource
++import com.maxrave.domain.utils.toSongEntity
++import com.maxrave.domain.utils.toTrack
++import com.maxrave.logger.Logger
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Job
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.flow.StateFlow
++import kotlinx.coroutines.flow.asStateFlow
++import kotlinx.coroutines.flow.first
++import kotlinx.coroutines.flow.firstOrNull
++import kotlinx.coroutines.flow.update
++import kotlinx.coroutines.launch
++import org.koin.mp.KoinPlatform.getKoin
++
++private const val TAG = "IosMediaPlayerHandler"
++
++/**
++ * iOS counterpart of the Android/JVM service handler.
++ *
++ * It intentionally keeps the same domain contract and queue semantics, while leaving Android
++ * notification/session concerns out of the iOS binary. The AVPlayer adapter remains the only
++ * platform-specific playback dependency.
++ */
++class IosMediaPlayerHandler(
++    private val dataStoreManager: DataStoreManager,
++    private val songRepository: SongRepository,
++    private val streamRepository: StreamRepository,
++    @Suppress("UNUSED_PARAMETER") private val localPlaylistRepository: LocalPlaylistRepository,
++    @Suppress("UNUSED_PARAMETER") private val analyticsRepository: AnalyticsRepository,
++    private val coroutineScope: CoroutineScope,
++) : MediaPlayerHandler,
++    MediaPlayerListener {
++    override val player: MediaPlayerInterface = getKoin().get()
++
++    override var onUpdateNotification: (List<GenericCommandButton>) -> Unit = {}
++    override var pushPlayerError: (PlayerError) -> Unit = {}
++    override var showToast: (ToastType) -> Unit = {}
++
++    private val _simpleMediaState = MutableStateFlow<SimpleMediaState>(SimpleMediaState.Initial)
++    override val simpleMediaState: StateFlow<SimpleMediaState> = _simpleMediaState.asStateFlow()
++
++    private val _nowPlaying = MutableStateFlow<GenericMediaItem?>(player.currentMediaItem)
++    override val nowPlaying: StateFlow<GenericMediaItem?> = _nowPlaying.asStateFlow()
++
++    private val _queueData = MutableStateFlow(QueueData())
++    override val queueData: StateFlow<QueueData?> = _queueData.asStateFlow()
++
++    private val _controlState =
++        MutableStateFlow(
++            ControlState(
++                isPlaying = player.isPlaying,
++                isShuffle = player.shuffleModeEnabled,
++                repeatState = repeatState(player.repeatMode),
++                isLiked = false,
++                isNextAvailable = player.hasNextMediaItem(),
++                isPreviousAvailable = player.hasPreviousMediaItem(),
++                isCrossfading = false,
++                volume = player.volume,
++            ),
++        )
++    override val controlState: StateFlow<ControlState> = _controlState.asStateFlow()
++
++    private val _nowPlayingState = MutableStateFlow(NowPlayingTrackState.initial())
++    override val nowPlayingState: StateFlow<NowPlayingTrackState> = _nowPlayingState.asStateFlow()
++
++    private val _sleepTimerState = MutableStateFlow(SleepTimerState(false, 0))
++    override val sleepTimerState: StateFlow<SleepTimerState> = _sleepTimerState.asStateFlow()
++
++    private val _skipSegments = MutableStateFlow<List<SponsorSkipSegments>?>(null)
++    override val skipSegments: StateFlow<List<SponsorSkipSegments>?> = _skipSegments.asStateFlow()
++
++    private val _format = MutableStateFlow<NewFormatEntity?>(null)
++    override val format: StateFlow<NewFormatEntity?> = _format.asStateFlow()
++
++    private val _currentSongIndex = MutableStateFlow(player.currentMediaItemIndex)
++    override val currentSongIndex: StateFlow<Int> = _currentSongIndex.asStateFlow()
++
++    override val castState: StateFlow<GenericCastState> =
++        MutableStateFlow(GenericCastState.NOT_CASTING).asStateFlow()
++
++    private var sleepTimerJob: Job? = null
++    private var relatedJob: Job? = null
++    private var released = false
++
++    init {
++        player.addListener(this)
++        coroutineScope.launch {
++            attempt { dataStoreManager.playerVolume.first() }.getOrNull()?.let { player.volume = it }
++        }
++        coroutineScope.launch {
++            attempt { mayBeRestoreQueue() }
++        }
++    }
++
++    override suspend fun onPlayerEvent(playerEvent: PlayerEvent) {
++        when (playerEvent) {
++            PlayerEvent.PlayPause -> if (player.isPlaying) player.pause() else player.play()
++            PlayerEvent.Backward -> player.seekBack()
++            PlayerEvent.Forward -> player.seekForward()
++            PlayerEvent.Stop -> {
++                player.stop()
++                _nowPlayingState.value = NowPlayingTrackState.initial()
++            }
++            PlayerEvent.Next -> player.seekToNext()
++            PlayerEvent.Previous -> player.seekToPrevious()
++            PlayerEvent.SkipToPrevious -> player.seekToPreviousMediaItem()
++            PlayerEvent.Shuffle -> player.shuffleModeEnabled = !player.shuffleModeEnabled
++            PlayerEvent.Repeat -> {
++                player.repeatMode =
++                    when (player.repeatMode) {
++                        PlayerConstants.REPEAT_MODE_OFF -> PlayerConstants.REPEAT_MODE_ALL
++                        PlayerConstants.REPEAT_MODE_ALL -> PlayerConstants.REPEAT_MODE_ONE
++                        else -> PlayerConstants.REPEAT_MODE_OFF
++                    }
++            }
++            is PlayerEvent.UpdateProgress ->
++                player.seekTo((player.duration * playerEvent.newProgress / 100f).toLong())
++            PlayerEvent.ToggleLike -> toggleLike()
++            is PlayerEvent.UpdateVolume -> player.volume = playerEvent.newVolume
++        }
++    }
++
++    override fun toggleRadio() {
++        nowPlayingState.value.mediaItem.mediaId.takeIf { it.isNotBlank() }?.let(::getRelated)
++    }
++
++    override fun toggleLike() {
++        val mediaId = player.currentMediaItem?.mediaId ?: return
++        coroutineScope.launch {
++            val liked = controlState.value.isLiked
++            attempt { songRepository.updateLikeStatus(mediaId, if (liked) 0 else 1) }
++            _controlState.update { it.copy(isLiked = !liked) }
++        }
++    }
++
++    override fun like(liked: Boolean) {
++        _controlState.update { it.copy(isLiked = liked) }
++    }
++
++    override fun resetSongAndQueue() {
++        clearMediaItems()
++        _queueData.value = QueueData()
++        _nowPlayingState.value = NowPlayingTrackState.initial()
++    }
++
++    override fun sleepStart(minutes: Int) {
++        sleepTimerJob?.cancel()
++        sleepTimerJob = coroutineScope.launch {
++            val waitMs =
++                if (minutes == Int.MAX_VALUE) {
++                    (player.duration - player.currentPosition).coerceAtLeast(0L)
++                } else {
++                    minutes.coerceAtLeast(0).toLong() * 60_000L
++                }
++            _sleepTimerState.value = SleepTimerState(false, (waitMs / 60_000L).toInt())
++            var remaining = waitMs
++            while (remaining > 0L) {
++                delay(minOf(remaining, 1_000L))
++                remaining -= 1_000L
++                _sleepTimerState.value = SleepTimerState(false, (remaining / 60_000L).toInt())
++            }
++            player.sleepFadeFactor = 0f
++            player.pause()
++            player.sleepFadeFactor = 1f
++            _sleepTimerState.value = SleepTimerState(true, 0)
++        }
++    }
++
++    override fun sleepStop() {
++        sleepTimerJob?.cancel()
++        sleepTimerJob = null
++        player.sleepFadeFactor = 1f
++        _sleepTimerState.value = SleepTimerState(false, 0)
++    }
++
++    override fun removeMediaItem(position: Int) {
++        player.removeMediaItem(position)
++        updateQueueTracks { tracks -> tracks.filterIndexed { index, _ -> index != position } }
++    }
++
++    override fun addMediaItem(
++        mediaItem: GenericMediaItem,
++        playWhenReady: Boolean,
++    ) {
++        if (player.mediaItemCount == 0) player.setMediaItem(mediaItem) else player.addMediaItem(mediaItem)
++        player.prepare()
++        player.playWhenReady = playWhenReady
++        _nowPlaying.value = player.currentMediaItem ?: mediaItem
++        updateControlAvailability()
++    }
++
++    override fun clearMediaItems() {
++        player.clearMediaItems()
++        _nowPlaying.value = null
++        _nowPlayingState.value = NowPlayingTrackState.initial()
++        updateControlAvailability()
++    }
++
++    override fun addMediaItemList(mediaItemList: List<GenericMediaItem>) {
++        mediaItemList.forEach { mediaItem ->
++            if (player.getCurrentMediaTimeLine().none { it.mediaId == mediaItem.mediaId }) player.addMediaItem(mediaItem)
++        }
++        player.prepare()
++        updateControlAvailability()
++    }
++
++    override fun playMediaItemInMediaSource(index: Int) {
++        val actualIndex = if (player.shuffleModeEnabled) player.getUnshuffledIndex(index) else index
++        if (actualIndex !in 0 until player.mediaItemCount) return
++        player.seekTo(actualIndex, 0L)
++        player.playWhenReady = true
++    }
++
++    override fun currentSongIndex(): Int = player.currentMediaItemIndex
++
++    override fun currentOrderIndex(): Int {
++        val mediaId = player.currentMediaItem?.mediaId ?: return player.currentMediaItemIndex
++        return _queueData.value.data.listTracks.indexOfFirst { it.videoId == mediaId }
++            .takeIf { it >= 0 } ?: player.currentMediaItemIndex
++    }
++
++    override suspend fun swap(
++        from: Int,
++        to: Int,
++    ) {
++        if (from !in 0 until player.mediaItemCount || to !in 0 until player.mediaItemCount) return
++        player.moveMediaItem(from, to)
++        updateQueueTracks { tracks ->
++            tracks.toMutableList().also {
++                if (from in it.indices && to in it.indices) it.add(to, it.removeAt(from))
++            }
++        }
++    }
++
++    override fun resetCrossfade() {
++        _controlState.update { it.copy(isCrossfading = false) }
++    }
++
++    override fun shufflePlaylist(randomTrackIndex: Int) {
++        if (player.mediaItemCount == 0) return
++        player.shuffleModeEnabled = true
++        if (randomTrackIndex in 0 until player.mediaItemCount) playMediaItemInMediaSource(randomTrackIndex)
++    }
++
++    override fun loadMore() {
++        // Continuations are owned by the YouTube repository. iOS keeps the already loaded queue
++        // playable and does not turn an unavailable continuation into a crash.
++        if (_queueData.value.data.continuation == null) return
++    }
++
++    override fun getRelated(videoId: String) {
++        relatedJob?.cancel()
++        relatedJob = coroutineScope.launch {
++            attempt {
++                songRepository.getRelatedData(videoId).collect { resource ->
++                    if (resource is Resource.Success) {
++                        resource.data?.first?.let { loadMoreCatalog(ArrayList(it), isAddToQueue = true) }
++                        _queueData.update { it.setContinuation(resource.data?.second ?: "") }
++                    }
++                }
++            }.onFailure { Logger.w(TAG, "Related tracks unavailable: ${it.message}") }
++        }
++    }
++
++    override fun setQueueData(queueData: QueueData.Data) {
++        _queueData.value = QueueData(QueueData.StateSource.STATE_INITIALIZED, queueData)
++        player.albumTrackIds =
++            if (queueData.playlistType == PlaylistType.ALBUM) queueData.listTracks.map { it.videoId }.toSet() else emptySet()
++        updateControlAvailability()
++    }
++
++    override fun getCurrentMediaItem(): GenericMediaItem? = player.currentMediaItem
++
++    override suspend fun moveItemUp(position: Int) {
++        if (position > 0) swap(position, position - 1)
++    }
++
++    override suspend fun moveItemDown(position: Int) {
++        if (position < player.mediaItemCount - 1) swap(position, position + 1)
++    }
++
++    override fun addFirstMediaItemToIndex(
++        mediaItem: GenericMediaItem?,
++        index: Int,
++    ) {
++        mediaItem ?: return
++        player.addMediaItem(index.coerceIn(0, player.mediaItemCount), mediaItem)
++        updateControlAvailability()
++    }
++
++    override fun reset() {
++        clearMediaItems()
++        _queueData.value = QueueData()
++    }
++
++    override suspend fun load(
++        downloaded: Int,
++        index: Int?,
++    ) {
++        val tracks = _queueData.value.data.listTracks
++        if (tracks.isEmpty()) return
++        if (player.mediaItemCount == 0) addMediaItemList(tracks.map { it.toGenericMediaItem() })
++        index?.let { playMediaItemInMediaSource(it) }
++    }
++
++    override suspend fun loadMoreCatalog(
++        listTrack: ArrayList<Track>,
++        isAddToQueue: Boolean,
++    ) {
++        val existing = _queueData.value.data.listTracks.map { it.videoId }.toSet()
++        val fresh = listTrack.filter { it.videoId !in existing }
++        if (fresh.isEmpty()) return
++        _queueData.update {
++            it.copy(
++                queueState = QueueData.StateSource.STATE_INITIALIZED,
++                data = it.data.copy(listTracks = it.data.listTracks + fresh),
++            )
++        }
++        if (isAddToQueue || player.mediaItemCount > 0) addMediaItemList(fresh.map { it.toGenericMediaItem() })
++    }
++
++    override suspend fun updateCatalog(
++        downloaded: Int,
++        index: Int?,
++    ): Boolean {
++        load(downloaded, index)
++        return true
++    }
++
++    override fun addQueueToPlayer() {
++        coroutineScope.launch { load() }
++    }
++
++    override fun loadPlaylistOrAlbum(index: Int?) {
++        coroutineScope.launch {
++            val tracks = _queueData.value.data.listTracks
++            val existing = player.getCurrentMediaTimeLine().map { it.mediaId }.toSet()
++            val remaining = tracks.filter { it.videoId !in existing }
++            if (remaining.isNotEmpty()) addMediaItemList(remaining.map { it.toGenericMediaItem() })
++            index?.let { playMediaItemInMediaSource(it) }
++        }
++    }
++
++    override fun setCurrentSongIndex(index: Int) {
++        if (index in 0 until player.mediaItemCount) playMediaItemInMediaSource(index)
++    }
++
++    override suspend fun playNext(track: Track) {
++        val mediaItem = track.toGenericMediaItem()
++        val insertAt = (player.currentMediaItemIndex + 1).coerceAtLeast(0).coerceAtMost(player.mediaItemCount)
++        player.addMediaItem(insertAt, mediaItem)
++        updateQueueTracks { tracks -> tracks.toMutableList().also { it.add(insertAt.coerceAtMost(it.size), track) } }
++        updateControlAvailability()
++    }
++
++    override suspend fun <T> loadMediaItem(
++        anyTrack: T,
++        type: String,
++        index: Int?,
++    ) {
++        val track =
++            when (anyTrack) {
++                is Track -> anyTrack
++                is SongEntity -> anyTrack.toTrack()
++                else -> return
++            }
++        if (track.isExplicit && attempt { dataStoreManager.explicitContentEnabled.first() }.getOrNull() != DataStoreManager.TRUE) {
++            showToast(ToastType.ExplicitContent)
++            return
++        }
++        attempt { songRepository.insertSong(track.toSongEntity()).firstOrNull() }
++        track.durationSeconds?.let { attempt { songRepository.updateDurationSeconds(it, track.videoId) } }
++        clearMediaItems()
++        addMediaItem(track.toGenericMediaItem(), playWhenReady = type != Config.RECOVER_TRACK_QUEUE)
++        when (type) {
++            Config.SONG_CLICK, Config.VIDEO_CLICK, Config.SHARE -> getRelated(track.videoId)
++            Config.PLAYLIST_CLICK, Config.ALBUM_CLICK, Config.RADIO_CLICK -> loadPlaylistOrAlbum(index)
++        }
++    }
++
++    override fun getPlayerDuration(): Long = player.duration
++
++    override fun getProgress(): Long = player.currentPosition
++
++    override fun startProgressUpdate() = Unit
++
++    override fun stopProgressUpdate() = Unit
++
++    override fun startBufferedUpdate() = Unit
++
++    override fun stopBufferedUpdate() = Unit
++
++    override fun mayBeNormalizeVolume() = Unit
++
++    override fun mayBeSaveRecentSong(runBlocking: Boolean) {
++        val mediaId = player.currentMediaItem?.mediaId ?: return
++        coroutineScope.launch {
++            attempt {
++                if (dataStoreManager.saveRecentSongAndQueue.first() == DataStoreManager.TRUE) {
++                    dataStoreManager.saveRecentSong(mediaId, player.contentPosition)
++                    dataStoreManager.setPlaylistFromSaved(_queueData.value.data.playlistName ?: "")
++                    songRepository.recoverQueue(_queueData.value.data.listTracks)
++                }
++            }
++        }
++    }
++
++    override fun mayBeSavePlaybackState() {
++        coroutineScope.launch {
++            attempt {
++                dataStoreManager.recoverShuffleAndRepeatKey(player.shuffleModeEnabled, player.repeatMode)
++            }
++        }
++    }
++
++    override fun mayBeRestoreQueue() {
++        coroutineScope.launch {
++            attempt {
++                if (dataStoreManager.saveRecentSongAndQueue.first() != DataStoreManager.TRUE) return@attempt
++                val mediaId = dataStoreManager.recentMediaId.first().takeIf { it.isNotBlank() } ?: return@attempt
++                val saved = songRepository.getSongById(mediaId).firstOrNull()?.toTrack() ?: return@attempt
++                setQueueData(QueueData.Data(listTracks = listOf(saved), firstPlayedTrack = saved, playlistType = PlaylistType.RADIO))
++                addMediaItem(saved.toGenericMediaItem(), playWhenReady = false)
++                val position = dataStoreManager.recentPosition.first().toLongOrNull() ?: 0L
++                if (position > 0L) player.seekTo(position)
++            }
++        }
++    }
++
++    override fun shouldReleaseOnTaskRemoved(): Boolean = false
++
++    override fun release() {
++        if (released) return
++        released = true
++        sleepTimerJob?.cancel()
++        relatedJob?.cancel()
++        player.removeListener(this)
++        player.release()
++    }
++
++    override fun onPlaybackStateChanged(playbackState: Int) {
++        _simpleMediaState.value =
++            when (playbackState) {
++                PlayerConstants.STATE_READY -> SimpleMediaState.Ready(player.duration)
++                PlayerConstants.STATE_BUFFERING -> SimpleMediaState.Buffering(player.currentPosition)
++                PlayerConstants.STATE_ENDED -> SimpleMediaState.Ended
++                else -> SimpleMediaState.Initial
++            }
++    }
++
++    override fun onIsPlayingChanged(isPlaying: Boolean) {
++        _controlState.update { it.copy(isPlaying = isPlaying) }
++        updateControlAvailability()
++    }
++
++    override fun onMediaItemTransition(
++        mediaItem: GenericMediaItem?,
++        reason: Int,
++    ) {
++        _nowPlaying.value = mediaItem
++        _currentSongIndex.value = player.currentMediaItemIndex
++        if (mediaItem == null) {
++            _nowPlayingState.value = NowPlayingTrackState.initial()
++            return
++        }
++        coroutineScope.launch {
++            val track = _queueData.value.data.listTracks.firstOrNull { it.videoId == mediaItem.mediaId }
++            val entity =
++                track?.toSongEntity()
++                    ?: attempt { songRepository.getSongById(mediaItem.mediaId).firstOrNull() }.getOrNull()
++                    ?: mediaItem.toSongEntity()
++            if (track != null) attempt { songRepository.insertSong(entity).firstOrNull() }
++            _nowPlayingState.value = NowPlayingTrackState(mediaItem, track, entity)
++            attempt { _format.value = streamRepository.getNewFormat(mediaItem.mediaId).firstOrNull() }
++            attempt {
++                _controlState.update { it.copy(isLiked = songRepository.getLikeStatus(mediaItem.mediaId).first()) }
++            }
++        }
++    }
++
++    override fun onTimelineChanged(
++        list: List<GenericMediaItem>,
++        reason: String,
++    ) {
++        _currentSongIndex.value = player.currentMediaItemIndex
++        updateControlAvailability()
++    }
++
++    override fun onPlayerError(error: PlayerError) {
++        pushPlayerError(error)
++        showToast(ToastType.PlayerError(error.message ?: error.errorCodeName))
++    }
++
++    override fun onShuffleModeEnabledChanged(
++        shuffleModeEnabled: Boolean,
++        list: List<GenericMediaItem>,
++    ) {
++        _controlState.update { it.copy(isShuffle = shuffleModeEnabled) }
++    }
++
++    override fun onRepeatModeChanged(repeatMode: Int) {
++        _controlState.update { it.copy(repeatState = repeatState(repeatMode)) }
++    }
++
++    override fun onVolumeChanged(volume: Float) {
++        _controlState.update { it.copy(volume = volume) }
++    }
++
++    private fun updateControlAvailability() {
++        _controlState.update {
++            it.copy(
++                isPlaying = player.isPlaying,
++                isNextAvailable = player.hasNextMediaItem(),
++                isPreviousAvailable = player.hasPreviousMediaItem(),
++                isShuffle = player.shuffleModeEnabled,
++                repeatState = repeatState(player.repeatMode),
++                volume = player.volume,
++            )
++        }
++    }
++
++    private fun updateQueueTracks(transform: (List<Track>) -> List<Track>) {
++        _queueData.update { queue -> queue.copy(data = queue.data.copy(listTracks = transform(queue.data.listTracks))) }
++    }
++
++    private fun repeatState(mode: Int): RepeatState =
++        when (mode) {
++            PlayerConstants.REPEAT_MODE_ONE -> RepeatState.One
++            PlayerConstants.REPEAT_MODE_ALL -> RepeatState.All
++            else -> RepeatState.None
++        }
++
++    private suspend fun <T> attempt(block: suspend () -> T): Result<T> =
++        try {
++            Result.success(block())
++        } catch (error: Throwable) {
++            Result.failure(error)
++        }
++}
+diff --git a/data/src/iosSimulatorArm64Main/kotlin/com/maxrave/data/di/loader/Loader.iosSimulatorArm64.kt b/data/src/iosSimulatorArm64Main/kotlin/com/maxrave/data/di/loader/Loader.iosSimulatorArm64.kt
+deleted file mode 100644
+index 42b5184..0000000
+--- a/data/src/iosSimulatorArm64Main/kotlin/com/maxrave/data/di/loader/Loader.iosSimulatorArm64.kt
++++ /dev/null
+@@ -1,4 +0,0 @@
+-package com.maxrave.data.di.loader
+-
+-actual fun loadMediaService() {
+-}
+\ No newline at end of file
+diff --git a/data/src/iosSimulatorArm64Main/kotlin/com/maxrave/data/mediaservice/ExpectMediaHandler.iosSimulatorArm64.kt b/data/src/iosSimulatorArm64Main/kotlin/com/maxrave/data/mediaservice/ExpectMediaHandler.iosSimulatorArm64.kt
+deleted file mode 100644
+index da32277..0000000
+--- a/data/src/iosSimulatorArm64Main/kotlin/com/maxrave/data/mediaservice/ExpectMediaHandler.iosSimulatorArm64.kt
++++ /dev/null
+@@ -1,12 +0,0 @@
+-package com.maxrave.data.mediaservice
+-
+-actual fun createMediaServiceHandler(
+-    dataStoreManager: com.maxrave.domain.manager.DataStoreManager,
+-    songRepository: com.maxrave.domain.repository.SongRepository,
+-    streamRepository: com.maxrave.domain.repository.StreamRepository,
+-    localPlaylistRepository: com.maxrave.domain.repository.LocalPlaylistRepository,
+-    analyticsRepository: com.maxrave.domain.repository.AnalyticsRepository,
+-    coroutineScope: kotlinx.coroutines.CoroutineScope,
+-): com.maxrave.domain.mediaservice.handler.MediaPlayerHandler {
+-    TODO("Not yet implemented")
+-}
+\ No newline at end of file
+diff --git a/data/src/iosX64Main/kotlin/com/maxrave/data/di/loader/Loader.iosX64.kt b/data/src/iosX64Main/kotlin/com/maxrave/data/di/loader/Loader.iosX64.kt
+deleted file mode 100644
+index 42b5184..0000000
+--- a/data/src/iosX64Main/kotlin/com/maxrave/data/di/loader/Loader.iosX64.kt
++++ /dev/null
+@@ -1,4 +0,0 @@
+-package com.maxrave.data.di.loader
+-
+-actual fun loadMediaService() {
+-}
+\ No newline at end of file
+diff --git a/data/src/iosX64Main/kotlin/com/maxrave/data/mediaservice/ExpectMediaHandler.iosX64.kt b/data/src/iosX64Main/kotlin/com/maxrave/data/mediaservice/ExpectMediaHandler.iosX64.kt
+deleted file mode 100644
+index da32277..0000000
+--- a/data/src/iosX64Main/kotlin/com/maxrave/data/mediaservice/ExpectMediaHandler.iosX64.kt
++++ /dev/null
+@@ -1,12 +0,0 @@
+-package com.maxrave.data.mediaservice
+-
+-actual fun createMediaServiceHandler(
+-    dataStoreManager: com.maxrave.domain.manager.DataStoreManager,
+-    songRepository: com.maxrave.domain.repository.SongRepository,
+-    streamRepository: com.maxrave.domain.repository.StreamRepository,
+-    localPlaylistRepository: com.maxrave.domain.repository.LocalPlaylistRepository,
+-    analyticsRepository: com.maxrave.domain.repository.AnalyticsRepository,
+-    coroutineScope: kotlinx.coroutines.CoroutineScope,
+-): com.maxrave.domain.mediaservice.handler.MediaPlayerHandler {
+-    TODO("Not yet implemented")
+-}
+\ No newline at end of file
+diff --git a/service/kotlinYtmusicScraper/src/androidMain/kotlin/com/maxrave/kotlinytmusicscraper/extractor/Extractor.android.kt b/service/kotlinYtmusicScraper/src/androidMain/kotlin/com/maxrave/kotlinytmusicscraper/extractor/Extractor.android.kt
+index 7159271..ff34e74 100644
+--- a/service/kotlinYtmusicScraper/src/androidMain/kotlin/com/maxrave/kotlinytmusicscraper/extractor/Extractor.android.kt
++++ b/service/kotlinYtmusicScraper/src/androidMain/kotlin/com/maxrave/kotlinytmusicscraper/extractor/Extractor.android.kt
+@@ -4,6 +4,7 @@ import com.arthenica.ffmpegkit.FFmpegKit
+ import com.arthenica.ffmpegkit.ReturnCode
+ import com.maxrave.kotlinytmusicscraper.models.SongItem
+ import com.maxrave.kotlinytmusicscraper.models.response.DownloadProgress
++import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
+ import com.maxrave.logger.Logger
+ import dev.maxrave.pipepipe.extractor.NewPipe
+ import dev.maxrave.pipepipe.extractor.ServiceList
+@@ -35,7 +36,10 @@ actual class Extractor {
+         ServiceList.YouTube.tokens = cookie ?: ""
+     }
+ 
+-    actual fun newPipePlayer(videoId: String): List<Pair<Int, String>> {
++    actual suspend fun newPipePlayer(
++        videoId: String,
++        playerResponse: PlayerResponse,
++    ): List<Pair<Int, String>> {
+         // Three attempts, kept separate on purpose. PipePipe's own local-then-server fallback lives
+         // inside a single StreamInfo call and only fires when the local decoder THROWS — but the
+         // failure that actually happens is a stale player table, where the signature is well-formed
+@@ -296,4 +300,4 @@ actual class Extractor {
+             return (DownloadProgress.failed("Error"))
+         }
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/service/kotlinYtmusicScraper/src/commonMain/kotlin/com/maxrave/kotlinytmusicscraper/YouTube.kt b/service/kotlinYtmusicScraper/src/commonMain/kotlin/com/maxrave/kotlinytmusicscraper/YouTube.kt
+index 0942d97..12a168f 100644
+--- a/service/kotlinYtmusicScraper/src/commonMain/kotlin/com/maxrave/kotlinytmusicscraper/YouTube.kt
++++ b/service/kotlinYtmusicScraper/src/commonMain/kotlin/com/maxrave/kotlinytmusicscraper/YouTube.kt
+@@ -1194,7 +1194,7 @@ class YouTube {
+         } else {
+             sigResponse = tempRes
+         }
+-        val streamsList = ytMusic.getNewPipePlayer(videoId)
++        val streamsList = ytMusic.getNewPipePlayer(videoId, sigResponse)
+         if (streamsList.isEmpty()) return null
+ 
+         decodedSigResponse =
+@@ -2132,4 +2132,4 @@ class YouTube {
+         const val DEFAULT_VISITOR_DATA = "CgtsZG1ySnZiQWtSbyiMjuGSBg%3D%3D"
+ 
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/service/kotlinYtmusicScraper/src/commonMain/kotlin/com/maxrave/kotlinytmusicscraper/Ytmusic.kt b/service/kotlinYtmusicScraper/src/commonMain/kotlin/com/maxrave/kotlinytmusicscraper/Ytmusic.kt
+index 20459ea..874ada4 100644
+--- a/service/kotlinYtmusicScraper/src/commonMain/kotlin/com/maxrave/kotlinytmusicscraper/Ytmusic.kt
++++ b/service/kotlinYtmusicScraper/src/commonMain/kotlin/com/maxrave/kotlinytmusicscraper/Ytmusic.kt
+@@ -23,11 +23,12 @@ import com.maxrave.kotlinytmusicscraper.models.body.NextBody
+ import com.maxrave.kotlinytmusicscraper.models.body.PlayerBody
+ import com.maxrave.kotlinytmusicscraper.models.body.SearchBody
+ import com.maxrave.kotlinytmusicscraper.models.response.DownloadProgress
++import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
+ import com.maxrave.kotlinytmusicscraper.models.response.RemoteConfig
+ import com.maxrave.kotlinytmusicscraper.utils.parseCookieString
+ import com.maxrave.kotlinytmusicscraper.utils.sha1
+ import com.maxrave.ktorext.curl.CurlLogger
+-import com.maxrave.ktorext.encoding.brotli
++import com.maxrave.ktorext.encoding.brotliIfSupported
+ import com.maxrave.ktorext.getEngine
+ import com.maxrave.logger.Logger
+ import io.ktor.client.HttpClient
+@@ -183,7 +184,7 @@ class Ytmusic {
+             }
+ 
+             install(ContentEncoding) {
+-                brotli(1.0F)
++                brotliIfSupported(1.0F)
+                 gzip(0.9F)
+                 deflate(0.8F)
+             }
+@@ -249,7 +250,10 @@ class Ytmusic {
+             "SAPISIDHASH ${currentTime}_$sapisidHash"
+         }
+ 
+-    fun getNewPipePlayer(videoId: String): List<Pair<Int, String>> = extractor.newPipePlayer(videoId)
++    suspend fun getNewPipePlayer(
++        videoId: String,
++        playerResponse: PlayerResponse,
++    ): List<Pair<Int, String>> = extractor.newPipePlayer(videoId, playerResponse)
+ 
+     fun mergeAudioVideoDownload(filePath: String): DownloadProgress = extractor.mergeAudioVideoDownload(filePath)
+ 
+@@ -1303,4 +1307,4 @@ class Ytmusic {
+ 
+ expect fun getCountry(): String
+ 
+-expect fun getLanguage(): String
+\ No newline at end of file
++expect fun getLanguage(): String
+diff --git a/service/kotlinYtmusicScraper/src/commonMain/kotlin/com/maxrave/kotlinytmusicscraper/extractor/Extractor.kt b/service/kotlinYtmusicScraper/src/commonMain/kotlin/com/maxrave/kotlinytmusicscraper/extractor/Extractor.kt
+index 3e66af7..9f3bf9f 100644
+--- a/service/kotlinYtmusicScraper/src/commonMain/kotlin/com/maxrave/kotlinytmusicscraper/extractor/Extractor.kt
++++ b/service/kotlinYtmusicScraper/src/commonMain/kotlin/com/maxrave/kotlinytmusicscraper/extractor/Extractor.kt
+@@ -2,6 +2,7 @@ package com.maxrave.kotlinytmusicscraper.extractor
+ 
+ import com.maxrave.kotlinytmusicscraper.models.SongItem
+ import com.maxrave.kotlinytmusicscraper.models.response.DownloadProgress
++import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
+ 
+ expect class Extractor() {
+     fun init()
+@@ -15,5 +16,8 @@ expect class Extractor() {
+         track: SongItem,
+     ): DownloadProgress
+ 
+-    fun newPipePlayer(videoId: String): List<Pair<Int, String>>
+-}
+\ No newline at end of file
++    suspend fun newPipePlayer(
++        videoId: String,
++        playerResponse: PlayerResponse,
++    ): List<Pair<Int, String>>
++}
+diff --git a/service/kotlinYtmusicScraper/src/iosMain/kotlin/com/maxrave/kotlinytmusicscraper/extractor/Extractor.ios.kt b/service/kotlinYtmusicScraper/src/iosMain/kotlin/com/maxrave/kotlinytmusicscraper/extractor/Extractor.ios.kt
+index a9641fb..df5aceb 100644
+--- a/service/kotlinYtmusicScraper/src/iosMain/kotlin/com/maxrave/kotlinytmusicscraper/extractor/Extractor.ios.kt
++++ b/service/kotlinYtmusicScraper/src/iosMain/kotlin/com/maxrave/kotlinytmusicscraper/extractor/Extractor.ios.kt
+@@ -1,15 +1,91 @@
+ package com.maxrave.kotlinytmusicscraper.extractor
+ 
++import com.maxrave.kotlinytmusicscraper.cipher.FaradayCipherEngine
+ import com.maxrave.kotlinytmusicscraper.models.SongItem
+ import com.maxrave.kotlinytmusicscraper.models.response.DownloadProgress
++import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
++import io.ktor.client.HttpClient
++import io.ktor.client.engine.darwin.Darwin
++import io.ktor.http.URLBuilder
++import io.ktor.http.parseQueryString
++import kotlinx.coroutines.Dispatchers
+ 
+ actual class Extractor {
++    private val cipherEngine =
++        FaradayCipherEngine(
++            httpClient = HttpClient(Darwin),
++            jsThread = Dispatchers.Default.limitedParallelism(1),
++        )
++
+     actual fun init() {
+     }
+ 
+     actual fun logIn(cookie: String?) {}
+ 
+-    actual fun newPipePlayer(videoId: String): List<Pair<Int, String>> = emptyList()
++    /**
++     * iOS cannot link the JVM PipePipe/Brave extractors. Resolve the formats already returned by
++     * YouTube with the same common Faraday/QuickJS cipher engine instead. Direct URLs are kept as
++     * a fast path, while signatureCipher and the `n` throttling parameter are decoded in one pass.
++     */
++    actual suspend fun newPipePlayer(
++        videoId: String,
++        playerResponse: PlayerResponse,
++    ): List<Pair<Int, String>> {
++        val formats =
++            buildList {
++                addAll(playerResponse.streamingData?.formats.orEmpty())
++                addAll(playerResponse.streamingData?.adaptiveFormats.orEmpty())
++            }
++        if (formats.isEmpty()) return emptyList()
++
++        val cipherValues =
++            formats.mapNotNull { format ->
++                val source = format.signatureCipher ?: format.url ?: return@mapNotNull null
++                val params = parseQueryString(source)
++                val url = params["url"] ?: format.url ?: return@mapNotNull null
++                CipherValues(
++                    format = format,
++                    url = url,
++                    signature = params["s"],
++                    signatureParameter = params["sp"] ?: "signature",
++                )
++            }
++        val playerInfo =
++            if (cipherValues.any { it.signature != null || it.hasNParameter }) {
++                runCatching { cipherEngine.playerInfo() }.getOrNull()
++            } else {
++                null
++            }
++        val decoded =
++            playerInfo?.let { info ->
++                runCatching {
++                    cipherEngine.decode(
++                        playerId = info.playerId,
++                        signatures = cipherValues.mapNotNull { it.signature },
++                        nParameters = cipherValues.mapNotNull { it.nParameter },
++                    )
++                }.getOrNull()
++            }
++
++        val streams =
++            cipherValues.mapNotNull { value ->
++                val builder = runCatching { URLBuilder(value.url) }.getOrNull() ?: return@mapNotNull null
++                value.signature?.let { challenge ->
++                    val signature = decoded?.signatures?.get(challenge) ?: return@mapNotNull null
++                    builder.parameters[value.signatureParameter] = signature
++                }
++                value.nParameter?.let { challenge ->
++                    builder.parameters["n"] = decoded?.nParameters?.get(challenge) ?: challenge
++                }
++                val url = builder.toString()
++                if (url.startsWith("http://") || url.startsWith("https://")) value.format.itag to url else null
++            }.distinctBy { it.first }
++
++        if (streams.isNotEmpty()) {
++            ExtractSource.record(videoId, "YouTube · Faraday iOS")
++        }
++        return streams
++    }
+ 
+     actual fun mergeAudioVideoDownload(filePath: String): DownloadProgress = DownloadProgress.failed("Not supported on iOS")
+ 
+@@ -17,4 +93,17 @@ actual class Extractor {
+         filePath: String,
+         track: SongItem,
+     ): DownloadProgress = DownloadProgress.failed("Not supported on iOS")
+-}
+\ No newline at end of file
++
++    private data class CipherValues(
++        val format: PlayerResponse.StreamingData.Format,
++        val url: String,
++        val signature: String?,
++        val signatureParameter: String,
++    ) {
++        val nParameter: String?
++            get() = runCatching { URLBuilder(url).parameters["n"] }.getOrNull()
++
++        val hasNParameter: Boolean
++            get() = nParameter != null
++    }
++}
+diff --git a/service/kotlinYtmusicScraper/src/jvmMain/kotlin/com/maxrave/kotlinytmusicscraper/extractor/Extractor.jvm.kt b/service/kotlinYtmusicScraper/src/jvmMain/kotlin/com/maxrave/kotlinytmusicscraper/extractor/Extractor.jvm.kt
+index e6c1ac1..679a977 100644
+--- a/service/kotlinYtmusicScraper/src/jvmMain/kotlin/com/maxrave/kotlinytmusicscraper/extractor/Extractor.jvm.kt
++++ b/service/kotlinYtmusicScraper/src/jvmMain/kotlin/com/maxrave/kotlinytmusicscraper/extractor/Extractor.jvm.kt
+@@ -2,6 +2,7 @@ package com.maxrave.kotlinytmusicscraper.extractor
+ 
+ import com.maxrave.kotlinytmusicscraper.models.SongItem
+ import com.maxrave.kotlinytmusicscraper.models.response.DownloadProgress
++import com.maxrave.kotlinytmusicscraper.models.response.PlayerResponse
+ import com.maxrave.logger.Logger
+ import dev.maxrave.pipepipe.extractor.NewPipe
+ import dev.maxrave.pipepipe.extractor.ServiceList
+@@ -30,7 +31,10 @@ actual class Extractor {
+         ServiceList.YouTube.tokens = cookie ?: ""
+     }
+ 
+-    actual fun newPipePlayer(videoId: String): List<Pair<Int, String>> {
++    actual suspend fun newPipePlayer(
++        videoId: String,
++        playerResponse: PlayerResponse,
++    ): List<Pair<Int, String>> {
+         // Three attempts, kept separate on purpose. PipePipe's own local-then-server fallback lives
+         // inside a single StreamInfo call and only fires when the local decoder THROWS — but the
+         // failure that actually happens is a stale player table, where the signature is well-formed
+@@ -127,4 +131,4 @@ actual class Extractor {
+         filePath: String,
+         track: SongItem,
+     ): DownloadProgress = DownloadProgress.AUDIO_DONE
+-}
+\ No newline at end of file
++}
+diff --git a/service/ktorExt/src/androidMain/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.android.kt b/service/ktorExt/src/androidMain/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.android.kt
+index f348de9..699581d 100644
+--- a/service/ktorExt/src/androidMain/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.android.kt
++++ b/service/ktorExt/src/androidMain/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.android.kt
+@@ -27,4 +27,6 @@ object BrotliEncoder : ContentEncoder {
+     ): ByteWriteChannel = throw UnsupportedOperationException("Encode not implemented by the library yet.")
+ }
+ 
+-actual fun createBrotliEncoder(): ContentEncoder = BrotliEncoder
+\ No newline at end of file
++actual fun createBrotliEncoder(): ContentEncoder = BrotliEncoder
++
++actual fun isBrotliSupported(): Boolean = true
+diff --git a/service/ktorExt/src/commonMain/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.kt b/service/ktorExt/src/commonMain/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.kt
+index 843ea9c..3364f16 100644
+--- a/service/ktorExt/src/commonMain/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.kt
++++ b/service/ktorExt/src/commonMain/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.kt
+@@ -5,6 +5,17 @@ import io.ktor.util.ContentEncoder
+ 
+ expect fun createBrotliEncoder(): ContentEncoder
+ 
++/** Whether the current target has a Brotli decoder implementation available. */
++expect fun isBrotliSupported(): Boolean
++
+ fun ContentEncodingConfig.brotli(quality: Float? = null) {
+     customEncoder(createBrotliEncoder(), quality)
+-}
+\ No newline at end of file
++}
++
++/**
++ * Register Brotli only on targets that can actually decode it. iOS uses Ktor's native engine and
++ * deliberately negotiates gzip/deflate until a native Brotli implementation is linked.
++ */
++fun ContentEncodingConfig.brotliIfSupported(quality: Float? = null) {
++    if (isBrotliSupported()) brotli(quality)
++}
+diff --git a/service/ktorExt/src/iosArm64Main/kotlin/com/maxrave/ktorext/Engine.iosArm64.kt b/service/ktorExt/src/iosArm64Main/kotlin/com/maxrave/ktorext/Engine.iosArm64.kt
+deleted file mode 100644
+index 6c4f72b..0000000
+--- a/service/ktorExt/src/iosArm64Main/kotlin/com/maxrave/ktorext/Engine.iosArm64.kt
++++ /dev/null
+@@ -1,7 +0,0 @@
+-package com.maxrave.ktorext
+-
+-import io.ktor.client.engine.HttpClientEngineConfig
+-import io.ktor.client.engine.HttpClientEngineFactory
+-import io.ktor.client.engine.darwin.Darwin
+-
+-actual fun getEngine(): HttpClientEngineFactory<HttpClientEngineConfig> = Darwin
+\ No newline at end of file
+diff --git a/service/ktorExt/src/iosArm64Main/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.iosArm64.kt b/service/ktorExt/src/iosArm64Main/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.iosArm64.kt
+deleted file mode 100644
+index ba73acb..0000000
+--- a/service/ktorExt/src/iosArm64Main/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.iosArm64.kt
++++ /dev/null
+@@ -1,36 +0,0 @@
+-package com.maxrave.ktorext.encoding
+-
+-import io.ktor.util.ContentEncoder
+-import io.ktor.utils.io.ByteReadChannel
+-import io.ktor.utils.io.ByteWriteChannel
+-import kotlin.coroutines.CoroutineContext
+-
+-actual object BrotliEncoder : ContentEncoder {
+-    actual override val name: String
+-        get() = TODO("Not yet implemented")
+-
+-    actual override fun decode(
+-        source: ByteReadChannel,
+-        coroutineContext: CoroutineContext,
+-    ): ByteReadChannel {
+-        TODO("Not yet implemented")
+-    }
+-
+-    actual override fun encode(
+-        source: ByteReadChannel,
+-        coroutineContext: CoroutineContext,
+-    ): ByteReadChannel {
+-        TODO("Not yet implemented")
+-    }
+-
+-    actual override fun encode(
+-        source: ByteWriteChannel,
+-        coroutineContext: CoroutineContext,
+-    ): ByteWriteChannel {
+-        TODO("Not yet implemented")
+-    }
+-}
+-
+-actual fun createBrotliEncoder(): ContentEncoder {
+-    TODO("Not yet implemented")
+-}
+\ No newline at end of file
+diff --git a/service/ktorExt/src/iosMain/kotlin/com/maxrave/ktorext/crypto/Hmac.ios.kt b/service/ktorExt/src/iosMain/kotlin/com/maxrave/ktorext/crypto/Hmac.ios.kt
+index 29a3ef9..553e49c 100644
+--- a/service/ktorExt/src/iosMain/kotlin/com/maxrave/ktorext/crypto/Hmac.ios.kt
++++ b/service/ktorExt/src/iosMain/kotlin/com/maxrave/ktorext/crypto/Hmac.ios.kt
+@@ -1,19 +1,62 @@
+ package com.maxrave.ktorext.crypto
+ 
++import kotlinx.cinterop.addressOf
++import kotlinx.cinterop.usePinned
++import platform.CommonCrypto.CCHmac
++import platform.CommonCrypto.kCCHmacAlgSHA256
++import kotlin.io.encoding.Base64
++import kotlin.time.Clock
++
+ actual class Hmac actual constructor(algorithm: String, secretKey: String) {
++    private val key = secretKey.encodeToByteArray()
++
++    init {
++        require(algorithm.equals("HmacSHA256", ignoreCase = true)) {
++            "iOS Hmac supports HmacSHA256 only"
++        }
++        require(key.isNotEmpty()) { "HMAC secret key must not be empty" }
++    }
++
+     actual fun getMacTimestampPair(uri: String): Pair<String, String> {
+-        TODO("Not yet implemented")
++        val timestamp = Clock.System.now().toEpochMilliseconds().toString()
++        return generateHmac("$timestamp$uri") to timestamp
+     }
+ 
+     actual fun generateHmac(data: String): String {
+-        TODO("Not yet implemented")
++        val input = data.encodeToByteArray()
++        val output = ByteArray(32)
++        key.usePinned { keyPin ->
++            input.usePinned { inputPin ->
++                output.usePinned { outputPin ->
++                    CCHmac(
++                        kCCHmacAlgSHA256,
++                        key.size.toULong(),
++                        keyPin.addressOf(0),
++                        input.size.toULong(),
++                        if (input.isEmpty()) null else inputPin.addressOf(0),
++                        outputPin.addressOf(0),
++                    )
++                }
++            }
++        }
++        return Base64.encode(output)
+     }
+ 
+     actual fun validateHmac(data: String, hmac: String): Boolean {
+-        TODO("Not yet implemented")
++        val expected = generateHmac(data)
++        if (expected.length != hmac.length) return false
++        var difference = 0
++        expected.indices.forEach { index -> difference = difference or (expected[index].code xor hmac[index].code) }
++        return difference == 0
+     }
+ 
+     actual fun isValidTimestamp(timestamp: String): Boolean {
+-        TODO("Not yet implemented")
++        val requestTime = timestamp.toLongOrNull() ?: return false
++        val age = Clock.System.now().toEpochMilliseconds() - requestTime
++        return age in 0 until TOKEN_TTL_MS
++    }
++
++    private companion object {
++        const val TOKEN_TTL_MS = 300_000L
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/service/ktorExt/src/iosMain/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.ios.kt b/service/ktorExt/src/iosMain/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.ios.kt
+index 0bf80c0..925e863 100644
+--- a/service/ktorExt/src/iosMain/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.ios.kt
++++ b/service/ktorExt/src/iosMain/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.ios.kt
+@@ -13,24 +13,26 @@ object BrotliEncoder : ContentEncoder {
+         source: ByteReadChannel,
+         coroutineContext: CoroutineContext,
+     ): ByteReadChannel {
+-        TODO("Not yet implemented")
++        throw UnsupportedOperationException("Brotli encoding is not available on iOS")
+     }
+ 
+     override fun encode(
+         source: ByteWriteChannel,
+         coroutineContext: CoroutineContext,
+     ): ByteWriteChannel {
+-        TODO("Not yet implemented")
++        throw UnsupportedOperationException("Brotli encoding is not available on iOS")
+     }
+ 
+     override fun decode(
+         source: ByteReadChannel,
+         coroutineContext: CoroutineContext,
+     ): ByteReadChannel {
+-        TODO("Not yet implemented")
++        throw UnsupportedOperationException("Brotli decoding is not available on iOS")
+     }
+ }
+ 
+ actual fun createBrotliEncoder(): ContentEncoder {
+-    TODO("Not yet implemented")
+-}
+\ No newline at end of file
++    return BrotliEncoder
++}
++
++actual fun isBrotliSupported(): Boolean = false
+diff --git a/service/ktorExt/src/iosSimulatorArm64Main/kotlin/com/maxrave/ktorext/Engine.iosSimulatorArm64.kt b/service/ktorExt/src/iosSimulatorArm64Main/kotlin/com/maxrave/ktorext/Engine.iosSimulatorArm64.kt
+deleted file mode 100644
+index 6c4f72b..0000000
+--- a/service/ktorExt/src/iosSimulatorArm64Main/kotlin/com/maxrave/ktorext/Engine.iosSimulatorArm64.kt
++++ /dev/null
+@@ -1,7 +0,0 @@
+-package com.maxrave.ktorext
+-
+-import io.ktor.client.engine.HttpClientEngineConfig
+-import io.ktor.client.engine.HttpClientEngineFactory
+-import io.ktor.client.engine.darwin.Darwin
+-
+-actual fun getEngine(): HttpClientEngineFactory<HttpClientEngineConfig> = Darwin
+\ No newline at end of file
+diff --git a/service/ktorExt/src/iosSimulatorArm64Main/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.iosSimulatorArm64.kt b/service/ktorExt/src/iosSimulatorArm64Main/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.iosSimulatorArm64.kt
+deleted file mode 100644
+index ba73acb..0000000
+--- a/service/ktorExt/src/iosSimulatorArm64Main/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.iosSimulatorArm64.kt
++++ /dev/null
+@@ -1,36 +0,0 @@
+-package com.maxrave.ktorext.encoding
+-
+-import io.ktor.util.ContentEncoder
+-import io.ktor.utils.io.ByteReadChannel
+-import io.ktor.utils.io.ByteWriteChannel
+-import kotlin.coroutines.CoroutineContext
+-
+-actual object BrotliEncoder : ContentEncoder {
+-    actual override val name: String
+-        get() = TODO("Not yet implemented")
+-
+-    actual override fun decode(
+-        source: ByteReadChannel,
+-        coroutineContext: CoroutineContext,
+-    ): ByteReadChannel {
+-        TODO("Not yet implemented")
+-    }
+-
+-    actual override fun encode(
+-        source: ByteReadChannel,
+-        coroutineContext: CoroutineContext,
+-    ): ByteReadChannel {
+-        TODO("Not yet implemented")
+-    }
+-
+-    actual override fun encode(
+-        source: ByteWriteChannel,
+-        coroutineContext: CoroutineContext,
+-    ): ByteWriteChannel {
+-        TODO("Not yet implemented")
+-    }
+-}
+-
+-actual fun createBrotliEncoder(): ContentEncoder {
+-    TODO("Not yet implemented")
+-}
+\ No newline at end of file
+diff --git a/service/ktorExt/src/iosX64Main/kotlin/com/maxrave/ktorext/Engine.iosX64.kt b/service/ktorExt/src/iosX64Main/kotlin/com/maxrave/ktorext/Engine.iosX64.kt
+deleted file mode 100644
+index 6c4f72b..0000000
+--- a/service/ktorExt/src/iosX64Main/kotlin/com/maxrave/ktorext/Engine.iosX64.kt
++++ /dev/null
+@@ -1,7 +0,0 @@
+-package com.maxrave.ktorext
+-
+-import io.ktor.client.engine.HttpClientEngineConfig
+-import io.ktor.client.engine.HttpClientEngineFactory
+-import io.ktor.client.engine.darwin.Darwin
+-
+-actual fun getEngine(): HttpClientEngineFactory<HttpClientEngineConfig> = Darwin
+\ No newline at end of file
+diff --git a/service/ktorExt/src/iosX64Main/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.iosX64.kt b/service/ktorExt/src/iosX64Main/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.iosX64.kt
+deleted file mode 100644
+index ba73acb..0000000
+--- a/service/ktorExt/src/iosX64Main/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.iosX64.kt
++++ /dev/null
+@@ -1,36 +0,0 @@
+-package com.maxrave.ktorext.encoding
+-
+-import io.ktor.util.ContentEncoder
+-import io.ktor.utils.io.ByteReadChannel
+-import io.ktor.utils.io.ByteWriteChannel
+-import kotlin.coroutines.CoroutineContext
+-
+-actual object BrotliEncoder : ContentEncoder {
+-    actual override val name: String
+-        get() = TODO("Not yet implemented")
+-
+-    actual override fun decode(
+-        source: ByteReadChannel,
+-        coroutineContext: CoroutineContext,
+-    ): ByteReadChannel {
+-        TODO("Not yet implemented")
+-    }
+-
+-    actual override fun encode(
+-        source: ByteReadChannel,
+-        coroutineContext: CoroutineContext,
+-    ): ByteReadChannel {
+-        TODO("Not yet implemented")
+-    }
+-
+-    actual override fun encode(
+-        source: ByteWriteChannel,
+-        coroutineContext: CoroutineContext,
+-    ): ByteWriteChannel {
+-        TODO("Not yet implemented")
+-    }
+-}
+-
+-actual fun createBrotliEncoder(): ContentEncoder {
+-    TODO("Not yet implemented")
+-}
+\ No newline at end of file
+diff --git a/service/ktorExt/src/jvmMain/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.jvm.kt b/service/ktorExt/src/jvmMain/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.jvm.kt
+index f348de9..699581d 100644
+--- a/service/ktorExt/src/jvmMain/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.jvm.kt
++++ b/service/ktorExt/src/jvmMain/kotlin/com/maxrave/ktorext/encoding/BrotliEncoder.jvm.kt
+@@ -27,4 +27,6 @@ object BrotliEncoder : ContentEncoder {
+     ): ByteWriteChannel = throw UnsupportedOperationException("Encode not implemented by the library yet.")
+ }
+ 
+-actual fun createBrotliEncoder(): ContentEncoder = BrotliEncoder
+\ No newline at end of file
++actual fun createBrotliEncoder(): ContentEncoder = BrotliEncoder
++
++actual fun isBrotliSupported(): Boolean = true
+diff --git a/service/lyricsService/src/commonMain/kotlin/org/simpmusic/lyrics/SimpMusicLyrics.kt b/service/lyricsService/src/commonMain/kotlin/org/simpmusic/lyrics/SimpMusicLyrics.kt
+index 656ef75..66de52b 100644
+--- a/service/lyricsService/src/commonMain/kotlin/org/simpmusic/lyrics/SimpMusicLyrics.kt
++++ b/service/lyricsService/src/commonMain/kotlin/org/simpmusic/lyrics/SimpMusicLyrics.kt
+@@ -1,7 +1,7 @@
+ package org.simpmusic.lyrics
+ 
+ import com.maxrave.ktorext.curl.CurlLogger
+-import com.maxrave.ktorext.encoding.brotli
++import com.maxrave.ktorext.encoding.brotliIfSupported
+ import com.maxrave.ktorext.getEngine
+ import com.maxrave.logger.Logger
+ import io.ktor.client.HttpClient
+@@ -68,7 +68,7 @@ class SimpMusicLyrics {
+                 )
+             }
+             install(ContentEncoding) {
+-                brotli(1.0F)
++                brotliIfSupported(1.0F)
+                 gzip(0.9F)
+                 deflate(0.8F)
+             }
+diff --git a/service/soundcloud/build.gradle.kts b/service/soundcloud/build.gradle.kts
+new file mode 100644
+index 0000000..f7c00e6
+--- /dev/null
++++ b/service/soundcloud/build.gradle.kts
+@@ -0,0 +1,54 @@
++import com.android.build.gradle.internal.tasks.CompileArtProfileTask
++
++plugins {
++    alias(libs.plugins.kotlin.multiplatform)
++    alias(libs.plugins.android.kotlin.multiplatform.library)
++    alias(libs.plugins.android.lint)
++    alias(libs.plugins.kotlin.serialization)
++}
++
++kotlin {
++    android {
++        namespace = "com.maxrave.soundcloud"
++        compileSdk = 37
++        minSdk = 26
++    }
++
++    val xcfName = "soundcloudKit"
++    iosArm64 {
++        binaries.framework { baseName = xcfName }
++    }
++    iosSimulatorArm64 {
++        binaries.framework { baseName = xcfName }
++    }
++    jvm()
++
++    sourceSets {
++        commonMain.dependencies {
++            implementation(libs.kotlin.stdlib)
++            implementation(projects.domain)
++            implementation(projects.ktorExt)
++            implementation(libs.kotlinx.datetime)
++            implementation(libs.ktor.client.encoding)
++            implementation(libs.ktor.client.content.negotiation)
++            implementation(libs.ktor.serialization.kotlinx.json)
++            implementation(libs.kotlinx.serialization.json)
++        }
++        commonTest.dependencies {
++            implementation(libs.kotlin.test)
++        }
++        androidMain.dependencies {
++            implementation(libs.ktor.client.okhttp)
++        }
++        iosMain.dependencies {
++            implementation(libs.ktor.client.darwin)
++        }
++        jvmMain.dependencies {
++            implementation(libs.ktor.client.okhttp)
++        }
++    }
++}
++
++tasks.withType<CompileArtProfileTask> {
++    enabled = false
++}
+diff --git a/service/soundcloud/src/commonMain/kotlin/com/maxrave/soundcloud/SoundCloudClient.kt b/service/soundcloud/src/commonMain/kotlin/com/maxrave/soundcloud/SoundCloudClient.kt
+new file mode 100644
+index 0000000..17bf035
+--- /dev/null
++++ b/service/soundcloud/src/commonMain/kotlin/com/maxrave/soundcloud/SoundCloudClient.kt
+@@ -0,0 +1,286 @@
++package com.maxrave.soundcloud
++
++import com.maxrave.domain.manager.DataStoreManager
++import com.maxrave.ktorext.encoding.brotliIfSupported
++import com.maxrave.ktorext.getEngine
++import io.ktor.client.HttpClient
++import io.ktor.client.call.body
++import io.ktor.client.plugins.compression.ContentEncoding
++import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
++import io.ktor.client.request.get
++import io.ktor.client.request.parameter
++import io.ktor.client.statement.bodyAsText
++import io.ktor.http.HttpStatusCode
++import io.ktor.http.Url
++import io.ktor.http.contentLength
++import io.ktor.serialization.kotlinx.json.json
++import kotlinx.coroutines.async
++import kotlinx.coroutines.awaitAll
++import kotlinx.coroutines.coroutineScope
++import kotlinx.coroutines.sync.Semaphore
++import kotlinx.coroutines.sync.withLock
++import kotlinx.coroutines.sync.withPermit
++import kotlinx.coroutines.flow.first
++import kotlinx.serialization.json.Json
++import kotlinx.serialization.json.JsonElement
++import kotlinx.serialization.json.JsonObject
++import kotlinx.serialization.json.contentOrNull
++import kotlinx.serialization.json.jsonArray
++import kotlinx.serialization.json.jsonObject
++import kotlinx.serialization.json.jsonPrimitive
++import kotlinx.serialization.json.longOrNull
++
++data class SoundCloudTrack(
++    val id: String,
++    val title: String,
++    val artist: String,
++    val durationMs: Long,
++    val artworkUrl: String?,
++)
++
++/**
++ * SoundCloud's public web client adapter. It does not require a user API key: the web application
++ * publishes a short-lived public client_id in its frontend assets. The resolver caches it and
++ * validates it before exposing the provider to the rest of the app.
++ */
++class SoundCloudClient(
++    private val dataStoreManager: DataStoreManager,
++) {
++    private val json =
++        Json {
++            ignoreUnknownKeys = true
++            explicitNulls = false
++        }
++    private val httpClient =
++        HttpClient(getEngine()) {
++            expectSuccess = false
++            install(ContentNegotiation) { json(json) }
++            install(ContentEncoding) {
++                brotliIfSupported(1.0F)
++                gzip(0.9F)
++                deflate(0.8F)
++            }
++        }
++    private val clientIdResolver = SoundCloudClientIdResolver(httpClient, dataStoreManager)
++
++    suspend fun searchTracks(
++        query: String,
++        limit: Int = 20,
++    ): Result<List<SoundCloudTrack>> =
++        try {
++            val clientId = clientIdResolver.resolve() ?: error("SoundCloud web client ID unavailable")
++            val response =
++                httpClient.get(SEARCH_URL) {
++                    parameter("q", query)
++                    parameter("client_id", clientId)
++                    parameter("limit", limit.coerceIn(1, MAX_RESULTS))
++                    parameter("offset", 0)
++                }
++            if (response.status != HttpStatusCode.OK) error("SoundCloud search HTTP ${response.status.value}")
++            val root = response.body<JsonObject>()
++            Result.success(root["collection"]?.jsonArray.orEmpty().mapNotNull(::parseTrack))
++        } catch (error: Throwable) {
++            Result.failure(error)
++        }
++
++    suspend fun resolveStream(sourceId: String): Result<String?> =
++        try {
++            val clientId = clientIdResolver.resolve() ?: error("SoundCloud web client ID unavailable")
++            val trackId = sourceId.removePrefix(SOUNDCLOUD_ID_PREFIX)
++            val response = httpClient.get("$API_BASE/tracks/$trackId/streams") {
++                parameter("client_id", clientId)
++            }
++            if (response.status != HttpStatusCode.OK) error("SoundCloud stream HTTP ${response.status.value}")
++            val root = response.body<JsonObject>()
++            val legacy =
++                listOf(
++                    root.string("http_mp3_128_url"),
++                    root.string("hls_mp3_128_url"),
++                    root.string("preview_mp3_128_url"),
++                ).filterNotNull()
++            val transcodings =
++                root["media"]
++                    ?.jsonObject
++                    ?.get("transcodings")
++                    ?.jsonArray
++                    .orEmpty()
++                    .mapNotNull { it.jsonObjectOrNull() }
++                    .mapNotNull { transcoding ->
++                        val url = transcoding.string("url") ?: return@mapNotNull null
++                        val protocol = transcoding["format"]?.jsonObjectOrNull()?.string("protocol").orEmpty()
++                        val mime = transcoding["format"]?.jsonObjectOrNull()?.string("mime_type").orEmpty()
++                        val rank = when {
++                            protocol == "progressive" && mime.contains("mpeg", ignoreCase = true) -> 0
++                            protocol == "progressive" -> 1
++                            protocol == "hls" -> 2
++                            else -> 3
++                        }
++                        rank to withClientId(url, clientId)
++                    }
++                    .sortedBy { it.first }
++                    .map { it.second }
++            Result.success((legacy + transcodings).firstOrNull { it.startsWith("http://") || it.startsWith("https://") })
++        } catch (error: Throwable) {
++            Result.failure(error)
++        }
++
++    private fun parseTrack(element: JsonElement): SoundCloudTrack? {
++        val objectValue = element.jsonObjectOrNull() ?: return null
++        val numericId = objectValue["id"]?.jsonPrimitive?.contentOrNull ?: return null
++        val title = objectValue.string("title")?.takeIf { it.isNotBlank() } ?: return null
++        val user = objectValue["user"]?.jsonObjectOrNull()
++        val artist = user?.string("username") ?: "SoundCloud"
++        val artwork =
++            objectValue.string("artwork_url")
++                ?: user?.string("avatar_url")
++        return SoundCloudTrack(
++            id = "$SOUNDCLOUD_ID_PREFIX$numericId",
++            title = title,
++            artist = artist,
++            durationMs = objectValue["duration"]?.jsonPrimitive?.longOrNull ?: 0L,
++            artworkUrl = artwork?.replace("-large", "-t500x500"),
++        )
++    }
++
++    private fun withClientId(url: String, clientId: String): String {
++        val builder = runCatching { io.ktor.http.URLBuilder(url) }.getOrNull() ?: return url
++        if (builder.parameters["client_id"] == null) builder.parameters["client_id"] = clientId
++        return builder.toString()
++    }
++
++    private fun JsonObject.string(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
++
++    private fun JsonElement.jsonObjectOrNull(): JsonObject? = this as? JsonObject
++
++    companion object {
++        const val SOUNDCLOUD_ID_PREFIX = "sc:"
++        private const val WEB_HOME = "https://soundcloud.com/"
++        private const val API_BASE = "https://api-v2.soundcloud.com"
++        private const val SEARCH_URL = "$API_BASE/search/tracks"
++        private const val MAX_RESULTS = 50
++    }
++}
++
++private class SoundCloudClientIdResolver(
++    private val httpClient: HttpClient,
++    private val dataStoreManager: DataStoreManager,
++) {
++    private val mutex = kotlinx.coroutines.sync.Mutex()
++    private var memoryClientId: String? = null
++    private var memoryFetchedAt = 0L
++
++    suspend fun resolve(): String? = mutex.withLock {
++        val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
++        memoryClientId?.takeIf { now - memoryFetchedAt < CACHE_TTL_MS }?.let { return@withLock it }
++        val cached = dataStoreManager.getString(CACHE_KEY).first()?.split('|')
++        if (cached?.size == 2) {
++            val cachedAt = cached[0].toLongOrNull()
++            val cachedId = cached[1].takeIf(::isValidCandidate)
++            if (cachedAt != null && cachedId != null && now - cachedAt in 0..CACHE_TTL_MS) {
++                memoryClientId = cachedId
++                memoryFetchedAt = cachedAt
++                if (validate(cachedId)) return@withLock cachedId
++            }
++        }
++
++        val homepage = fetchText(WEB_HOME) ?: return@withLock null
++        val assetUrls = extractScriptUrls(homepage).take(MAX_ASSETS)
++        val candidates =
++            buildList {
++                addAll(extractCandidates(homepage))
++                addAll(
++                    coroutineScope {
++                        val semaphore = Semaphore(MAX_CONCURRENT_ASSETS)
++                        assetUrls.map { asset ->
++                            async {
++                                semaphore.withPermit { fetchText(asset)?.let(::extractCandidates).orEmpty() }
++                            }
++                        }.awaitAll().flatten()
++                    },
++                )
++            }.distinct()
++        var valid: String? = null
++        for (candidate in candidates) {
++            if (validate(candidate)) {
++                valid = candidate
++                break
++            }
++        }
++        valid ?: return@withLock null
++        memoryClientId = valid
++        memoryFetchedAt = now
++        dataStoreManager.putString(CACHE_KEY, "$now|$valid")
++        valid
++    }
++
++    private suspend fun validate(clientId: String): Boolean {
++        val response =
++            try {
++                httpClient.get("https://api-v2.soundcloud.com/search/tracks") {
++                    parameter("client_id", clientId)
++                    parameter("q", "test")
++                    parameter("limit", 1)
++                }
++            } catch (_: Throwable) {
++                null
++            }
++        return response?.status == HttpStatusCode.OK
++    }
++
++    private suspend fun fetchText(url: String): String? {
++        val response = try {
++            httpClient.get(url)
++        } catch (_: Throwable) {
++            return null
++        }
++        if (response.status != HttpStatusCode.OK) return null
++        if ((response.contentLength() ?: 0L) > MAX_ASSET_BYTES) return null
++        return response.bodyAsText().take(MAX_ASSET_BYTES)
++    }
++
++    private fun extractScriptUrls(homepage: String): List<String> =
++        SCRIPT_REGEX
++            .findAll(homepage)
++            .mapNotNull { match -> resolveAssetUrl(match.groupValues[1]) }
++            .filter(::isAllowedAsset)
++            .distinct()
++            .toList()
++
++    private fun resolveAssetUrl(raw: String): String? =
++        when {
++            raw.startsWith("https://") || raw.startsWith("http://") -> raw
++            raw.startsWith("//") -> "https:$raw"
++            raw.startsWith("/") -> "https://soundcloud.com$raw"
++            else -> null
++        }
++
++    private fun isAllowedAsset(url: String): Boolean {
++        val host = runCatching { Url(url).host }.getOrNull() ?: return false
++        return host == "soundcloud.com" || host.endsWith(".soundcloud.com") || host.endsWith(".sndcdn.com")
++    }
++
++    private fun extractCandidates(text: String): List<String> =
++        CLIENT_ID_REGEXES
++            .flatMap { regex -> regex.findAll(text).map { it.groupValues[1] }.toList() }
++            .filter(::isValidCandidate)
++            .distinct()
++
++    private fun isValidCandidate(value: String): Boolean =
++        value.length in 20..64 && CLIENT_ID_VALUE_REGEX.matches(value)
++
++    private companion object {
++        const val CACHE_KEY = "soundcloud.web.client_id"
++        const val WEB_HOME = "https://soundcloud.com/"
++        const val CACHE_TTL_MS = 12 * 60 * 60 * 1000L
++        const val MAX_ASSETS = 16
++        const val MAX_CONCURRENT_ASSETS = 4
++        const val MAX_ASSET_BYTES = 2 * 1024 * 1024
++        val SCRIPT_REGEX = Regex("""<script[^>]+src=[\"']([^\"']+\.js[^\"']*)[\"']""", RegexOption.IGNORE_CASE)
++        val CLIENT_ID_REGEXES =
++            listOf(
++                Regex("""(?i)client[_-]?id\s*[=:]\s*[\"']([A-Za-z0-9_-]{20,64})"""),
++                Regex("""(?i)client[_-]?(?:%3[dD]|=)([A-Za-z0-9_-]{20,64})"""),
++            )
++        val CLIENT_ID_VALUE_REGEX = Regex("^[A-Za-z0-9_-]+$")
++    }
++}
+diff --git a/service/spotify/src/commonMain/kotlin/com/maxrave/spotify/SpotifyClient.kt b/service/spotify/src/commonMain/kotlin/com/maxrave/spotify/SpotifyClient.kt
+index 6d0d94a..19cda42 100644
+--- a/service/spotify/src/commonMain/kotlin/com/maxrave/spotify/SpotifyClient.kt
++++ b/service/spotify/src/commonMain/kotlin/com/maxrave/spotify/SpotifyClient.kt
+@@ -1,7 +1,7 @@
+ package com.maxrave.spotify
+ 
+ import com.maxrave.ktorext.curl.CurlLogger
+-import com.maxrave.ktorext.encoding.brotli
++import com.maxrave.ktorext.encoding.brotliIfSupported
+ import com.maxrave.ktorext.getEngine
+ import com.maxrave.spotify.model.body.CanvasBody
+ import com.maxrave.spotify.model.body.SpotifyClientBody
+@@ -100,7 +100,7 @@ class SpotifyClient {
+                 )
+             }
+             install(ContentEncoding) {
+-                brotli(1.0F)
++                brotliIfSupported(1.0F)
+                 gzip(0.9F)
+                 deflate(0.8F)
+             }
+@@ -269,4 +269,4 @@ class SpotifyClient {
+     companion object {
+         const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.157 Safari/537.36"
+     }
+-}
+\ No newline at end of file
++}
+diff --git a/service/spotify/src/iosMain/kotlin/com/maxrave/spotify/auth/SpotifyTotp.ios.kt b/service/spotify/src/iosMain/kotlin/com/maxrave/spotify/auth/SpotifyTotp.ios.kt
+index 298529f..754afe0 100644
+--- a/service/spotify/src/iosMain/kotlin/com/maxrave/spotify/auth/SpotifyTotp.ios.kt
++++ b/service/spotify/src/iosMain/kotlin/com/maxrave/spotify/auth/SpotifyTotp.ios.kt
+@@ -1,5 +1,54 @@
+ package com.maxrave.spotify.auth
+ 
++import kotlinx.cinterop.addressOf
++import kotlinx.cinterop.usePinned
++import platform.CommonCrypto.CCHmac
++import platform.CommonCrypto.kCCHmacAlgSHA1
++
+ actual fun generateTotp(secret: String, timestamp: Long): String {
+-    TODO("Not yet implemented")
+-}
+\ No newline at end of file
++    val key = decodeBase32(secret)
++    require(key.isNotEmpty()) { "Spotify TOTP secret is empty" }
++    val counter = (timestamp / 1000L) / 30L
++    val counterBytes = ByteArray(8) { index -> (counter ushr (56 - index * 8)).toByte() }
++    val digest = ByteArray(20)
++    key.usePinned { keyPin ->
++        counterBytes.usePinned { counterPin ->
++            digest.usePinned { digestPin ->
++                CCHmac(
++                    kCCHmacAlgSHA1,
++                    key.size.toULong(),
++                    keyPin.addressOf(0),
++                    counterBytes.size.toULong(),
++                    counterPin.addressOf(0),
++                    digestPin.addressOf(0),
++                )
++            }
++        }
++    }
++    val offset = digest.last().toInt() and 0x0f
++    val binary =
++        ((digest[offset].toInt() and 0x7f) shl 24) or
++            ((digest[offset + 1].toInt() and 0xff) shl 16) or
++            ((digest[offset + 2].toInt() and 0xff) shl 8) or
++            (digest[offset + 3].toInt() and 0xff)
++    return (binary % 1_000_000).toString().padStart(6, '0')
++}
++
++private const val BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"
++
++private fun decodeBase32(value: String): ByteArray {
++    var buffer = 0
++    var bits = 0
++    val result = ArrayList<Byte>()
++    value.filterNot { it == '=' || it.isWhitespace() }.forEach { character ->
++        val digit = BASE32_ALPHABET.indexOf(character.uppercaseChar())
++        require(digit >= 0) { "Invalid Spotify TOTP secret" }
++        buffer = (buffer shl 5) or digit
++        bits += 5
++        if (bits >= 8) {
++            bits -= 8
++            result += ((buffer shr bits) and 0xff).toByte()
++        }
++    }
++    return result.toByteArray()
++}

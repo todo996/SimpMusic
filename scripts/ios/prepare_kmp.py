@@ -9,6 +9,8 @@ old = """//    listOf(\n//        iosArm64(),\n//        iosSimulatorArm64()\n//
 new = """    listOf(\n        iosArm64(),\n        iosSimulatorArm64()\n    ).forEach { iosTarget ->\n        iosTarget.binaries.framework {\n            baseName = \"ComposeApp\"\n            isStatic = true\n        }\n    }"""
 if old in s:
     s = s.replace(old, new)
+elif "iosArm64()" in s and "iosSimulatorArm64()" in s:
+    pass
 elif new not in s:
     raise SystemExit("Unable to locate composeApp iOS target block")
 

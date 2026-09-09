@@ -3,7 +3,7 @@ name: Build iOS
 on:
   workflow_dispatch:
   push:
-    branches: [ios-port]
+    branches: [ios-port, 'codex/**']
 
 jobs:
   build-ios:
@@ -29,6 +29,7 @@ jobs:
 
       - name: Audit and prepare iOS KMP sources
         run: |
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_override.patch
           python3 scripts/ios/prepare_kmp.py
           python3 scripts/ios/prepare_compose_kmp.py
 
