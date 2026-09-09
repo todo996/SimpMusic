@@ -188,37 +188,27 @@ jobs:
           test -f "$SIM_APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
           xcrun simctl install "$DEVICE_ID" "$SIM_APP"
           set +e
-          xcrun simctl launch --console "$DEVICE_ID" com.maxrave.simpmusic.ios > build/simctl-launch.log 2>&1 &
-          LAUNCH_PID=$!
+          xcrun simctl spawn "$DEVICE_ID" log stream --style compact --level debug \
+            --predicate 'process == "SimpMusic" OR eventMessage CONTAINS[c] "SimpMusic"' \
+            > build/simctl-stream.log 2>&1 &
+          LOG_PID=$!
+          xcrun simctl launch "$DEVICE_ID" com.maxrave.simpmusic.ios > build/simctl-launch.log 2>&1
+          LAUNCH_STATUS=$?
           sleep 15
           if xcrun simctl spawn "$DEVICE_ID" ps -A | grep -q '[S]impMusic'; then
               APP_RUNNING=1
           else
               APP_RUNNING=0
           fi
-          if kill -0 "$LAUNCH_PID" 2>/dev/null; then
-              if [ "$APP_RUNNING" -eq 1 ]; then
-                  xcrun simctl terminate "$DEVICE_ID" com.maxrave.simpmusic.ios || true
-                  # `simctl launch --console` can keep its console client open after the
-                  # application has been terminated. The app has already passed the liveness
-                  # check above, so stop only that client and do not turn a passing launch into a
-                  # 60-minute workflow timeout.
-                  kill "$LAUNCH_PID" 2>/dev/null || true
-                  wait "$LAUNCH_PID" 2>/dev/null || true
-                  LAUNCH_STATUS=0
-              else
-                  wait "$LAUNCH_PID" 2>/dev/null
-                  LAUNCH_STATUS=$?
-              fi
-          else
-              wait "$LAUNCH_PID" 2>/dev/null
-              LAUNCH_STATUS=$?
-          fi
+          xcrun simctl terminate "$DEVICE_ID" com.maxrave.simpmusic.ios || true
+          kill "$LOG_PID" 2>/dev/null || true
+          wait "$LOG_PID" 2>/dev/null || true
           set -e
           xcrun simctl spawn "$DEVICE_ID" log show --last 3m --style compact \
             --predicate 'process == "SimpMusic" OR eventMessage CONTAINS[c] "SimpMusic"' \
             > build/simctl-system.log 2>&1 || true
           cat build/simctl-launch.log
+          cat build/simctl-stream.log
           if [ "$LAUNCH_STATUS" -ne 0 ]; then
               echo "Simulator launch command failed with status $LAUNCH_STATUS"
               exit 1
