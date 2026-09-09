@@ -14,6 +14,7 @@ targets:
     deploymentTarget: '16.0'
     sources:
       - path: SimpMusicApp.swift
+      - path: Assets.xcassets
     info:
       path: Info.plist
       properties:
@@ -34,4 +35,5 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.maxrave.simpmusic.ios
         CODE_SIGN_STYLE: Automatic
         TARGETED_DEVICE_FAMILY: '1,2'
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         FRAMEWORK_SEARCH_PATHS: '$(inherited) $(SRCROOT)/../composeApp/build/bin/iosArm64/debugFramework'
