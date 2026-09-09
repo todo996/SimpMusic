@@ -56,15 +56,18 @@ jobs:
         run: |
           set -euo pipefail
           RESOURCE_FILE=$(find "$GITHUB_WORKSPACE/composeApp/build" -type f \
-            -path '*/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr' \
+            -path '*/preparedResources/commonMain/composeResources/values/strings.commonMain.cvr' \
             -print -quit)
           if [ -z "$RESOURCE_FILE" ]; then
-            echo 'ERROR: generated Compose resource strings.commonMain.cvr was not found'
+            echo 'ERROR: prepared Compose resource strings.commonMain.cvr was not found'
             exit 1
           fi
-          RESOURCE_ROOT=$(dirname "$(dirname "$(dirname "$RESOURCE_FILE")")")
-          test -f "$RESOURCE_ROOT/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
-          echo "COMPOSE_RESOURCE_ROOT=$RESOURCE_ROOT" >> "$GITHUB_ENV"
+          SOURCE_RESOURCE_ROOT=$(dirname "$(dirname "$RESOURCE_FILE")")
+          STAGED_RESOURCE_ROOT="$GITHUB_WORKSPACE/build/ios-compose-resources/composeResources/simpmusic.composeapp.generated.resources"
+          mkdir -p "$STAGED_RESOURCE_ROOT"
+          cp -R "$SOURCE_RESOURCE_ROOT/." "$STAGED_RESOURCE_ROOT/"
+          test -f "$GITHUB_WORKSPACE/build/ios-compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
+          echo "COMPOSE_RESOURCE_ROOT=$GITHUB_WORKSPACE/build/ios-compose-resources" >> "$GITHUB_ENV"
 
       - name: Reject iOS 26-only runtime symbols
         run: |
