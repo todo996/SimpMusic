@@ -184,7 +184,7 @@ jobs:
           SIM_APP=build/ios-simulator/Build/Products/Debug-iphonesimulator/SimpMusic.app
           test -x "$SIM_APP/SimpMusic"
           mkdir -p "$SIM_APP/compose-resources"
-          cp -R "$COMPOSE_RESOURCE_ROOT" "$SIM_APP/compose-resources/"
+          cp -R "$COMPOSE_RESOURCE_ROOT/composeResources" "$SIM_APP/compose-resources/"
           test -f "$SIM_APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
           xcrun simctl install "$DEVICE_ID" "$SIM_APP"
           set +e
@@ -230,7 +230,7 @@ jobs:
           test -x "$APP/SimpMusic"
           test -f "$APP/Assets.car"
           mkdir -p "$APP/compose-resources"
-          cp -R "$COMPOSE_RESOURCE_ROOT" "$APP/compose-resources/"
+          cp -R "$COMPOSE_RESOURCE_ROOT/composeResources" "$APP/compose-resources/"
           test -f "$APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
           test ! -e "$APP/SimpMusic.debug.dylib"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' "$APP/Info.plist" >/dev/null
