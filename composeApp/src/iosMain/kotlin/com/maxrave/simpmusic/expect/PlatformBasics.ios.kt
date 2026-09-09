@@ -1,5 +1,7 @@
 package com.maxrave.simpmusic.expect
 
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.cinterop.useContents
 import platform.Foundation.NSHomeDirectory
 import platform.Foundation.NSURL
 import platform.UIKit.UIApplication
@@ -22,16 +24,17 @@ actual fun openUrl(url: String) {
 }
 
 actual fun shareUrl(title: String, url: String) {
-    // URL sharing is routed through the native share sheet by the iOS host.
-    // Keep the common API usable even when there is no active presenter.
     openUrl(url)
 }
 
+@OptIn(ExperimentalForeignApi::class)
 actual fun currentOrientation(): Orientation {
-    val size = UIScreen.mainScreen.bounds.size
-    return when {
-        size.width > size.height -> Orientation.LANDSCAPE
-        size.height > size.width -> Orientation.PORTRAIT
-        else -> Orientation.UNSPECIFIED
+    val bounds = UIScreen.mainScreen.bounds
+    return bounds.useContents {
+        when {
+            size.width > size.height -> Orientation.LANDSCAPE
+            size.height > size.width -> Orientation.PORTRAIT
+            else -> Orientation.UNSPECIFIED
+        }
     }
 }
