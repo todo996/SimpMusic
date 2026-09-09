@@ -188,10 +188,25 @@ jobs:
           test -f "$SIM_APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
           xcrun simctl install "$DEVICE_ID" "$SIM_APP"
           set +e
-          xcrun simctl launch "$DEVICE_ID" com.maxrave.simpmusic.ios > build/simctl-launch.log 2>&1
-          LAUNCH_STATUS=$?
-          set -e
+          xcrun simctl launch --console "$DEVICE_ID" com.maxrave.simpmusic.ios > build/simctl-launch.log 2>&1 &
+          LAUNCH_PID=$!
           sleep 15
+          if xcrun simctl spawn "$DEVICE_ID" ps -A | grep -q '[S]impMusic'; then
+              APP_RUNNING=1
+          else
+              APP_RUNNING=0
+          fi
+          if kill -0 "$LAUNCH_PID" 2>/dev/null; then
+              if [ "$APP_RUNNING" -eq 1 ]; then
+                  xcrun simctl terminate "$DEVICE_ID" com.maxrave.simpmusic.ios || true
+              fi
+              wait "$LAUNCH_PID" 2>/dev/null
+              LAUNCH_STATUS=$?
+          else
+              wait "$LAUNCH_PID" 2>/dev/null
+              LAUNCH_STATUS=$?
+          fi
+          set -e
           xcrun simctl spawn "$DEVICE_ID" log show --last 3m --style compact \
             --predicate 'process == "SimpMusic" OR eventMessage CONTAINS[c] "SimpMusic"' \
             > build/simctl-system.log 2>&1 || true
@@ -200,7 +215,7 @@ jobs:
               echo "Simulator launch command failed with status $LAUNCH_STATUS"
               exit 1
           fi
-          if ! xcrun simctl spawn "$DEVICE_ID" ps -A | grep -q '[S]impMusic'; then
+          if [ "$APP_RUNNING" -ne 1 ]; then
               echo 'Simulator app exited during the startup smoke test'
               exit 1
           fi
