@@ -17,6 +17,32 @@ def rewrite(path: Path, transform):
         changed.append(path.relative_to(ROOT).as_posix())
 
 
+# 0) Keep the iOS Compose runtime on the same generation as the Compose plugin.
+# The upstream catalog pins Material3 1.12.0-alpha01, which transitively upgrades
+# foundation/ui + Skiko to the Compose 1.12 line. That framework references newer
+# Apple SDK symbols (for example UIViewLayoutRegion/SwiftUICore) and cannot be
+# linked by the Xcode 16.4 runner used for the unsigned test IPA. For iOS CI we
+# align Material3 with the project's Compose Multiplatform plugin (1.11.1) and
+# use the stable Compottie build that targets the same Skiko generation.
+versions = ROOT / "gradle/libs.versions.toml"
+
+def patch_versions(text: str) -> str:
+    text = re.sub(
+        r'^material3-multiplatform\s*=\s*"[^"]+".*$',
+        'material3-multiplatform = "1.11.1" # iOS CI: align with Compose Multiplatform 1.11.1 / Xcode 16',
+        text,
+        flags=re.M,
+    )
+    text = re.sub(
+        r'^compottie\s*=\s*"[^"]+".*$',
+        'compottie = "2.2.2" # iOS CI: stable build matching the Compose 1.11 Skiko line',
+        text,
+        flags=re.M,
+    )
+    return text
+
+rewrite(versions, patch_versions)
+
 # 1) Common Kotlin/Native cleanup applied across composeApp/commonMain.
 for p in COMMON.rglob("*.kt"):
     def normalize(text: str) -> str:
@@ -87,9 +113,6 @@ def patch_settings(text: str) -> str:
     text = text.replace("import java.time.ZoneId\n", "")
     text = text.replace("import java.time.format.DateTimeFormatter\n", "")
 
-    # Ensure required kotlinx-datetime imports exist even when the source did not
-    # already import TimeZone. The previous preflight only added toLocalDateTime
-    # when TimeZone was already present, which caused run #17 to fail.
     if "import kotlinx.datetime.TimeZone\n" not in text:
         anchor = "import kotlinx.datetime.LocalDateTime\n"
         if anchor in text:
@@ -156,7 +179,6 @@ def patch_build(text: str) -> str:
         if marker in text:
             text = text.replace(marker, marker + "            implementation(libs.okio)\n", 1)
         else:
-            # Fallback next to Ktor, which is definitely in commonMain in this project.
             marker = "            implementation(libs.ktor.client.cio)\n"
             text = text.replace(marker, marker + "            implementation(libs.okio)\n", 1)
     return text
