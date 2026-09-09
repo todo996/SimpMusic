@@ -18,18 +18,25 @@ def rewrite(path: Path, transform):
 
 
 # 0) Keep the iOS Compose runtime on the same generation as the Compose plugin.
-# The upstream catalog pins Material3 1.12.0-alpha01, which transitively upgrades
-# foundation/ui + Skiko to the Compose 1.12 line. That framework references newer
-# Apple SDK symbols (for example UIViewLayoutRegion/SwiftUICore) and cannot be
-# linked by the Xcode 16.4 runner used for the unsigned test IPA. For iOS CI we
-# align Material3 with the project's Compose Multiplatform plugin (1.11.1) and
-# use the stable Compottie build that targets the same Skiko generation.
+# Compose Multiplatform 1.11.1 does NOT publish Material3 as 1.11.1. JetBrains'
+# compatibility table maps it to Material3 1.11.0-alpha07 and Material3 Adaptive
+# 1.3.0-alpha07. The upstream catalog pins Material3 1.12.0-alpha01, which
+# transitively upgrades foundation/ui + Skiko to the Compose 1.12 line and makes
+# the produced framework reference newer Apple SDK symbols (UIViewLayoutRegion /
+# SwiftUICore) that Xcode 16.4 cannot link. Use the official 1.11 generation
+# coordinates and stable Compottie, which stays on the matching Skiko line.
 versions = ROOT / "gradle/libs.versions.toml"
 
 def patch_versions(text: str) -> str:
     text = re.sub(
         r'^material3-multiplatform\s*=\s*"[^"]+".*$',
-        'material3-multiplatform = "1.11.1" # iOS CI: align with Compose Multiplatform 1.11.1 / Xcode 16',
+        'material3-multiplatform = "1.11.0-alpha07" # iOS CI: official Material3 for Compose Multiplatform 1.11.1',
+        text,
+        flags=re.M,
+    )
+    text = re.sub(
+        r'^adaptive\s*=\s*"[^"]+".*$',
+        'adaptive = "1.3.0-alpha07" # iOS CI: official Material3 Adaptive for Compose Multiplatform 1.11.1',
         text,
         flags=re.M,
     )
