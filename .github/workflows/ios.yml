@@ -116,15 +116,21 @@ jobs:
 
       - name: Build unsigned app
         run: |
-          xcodebuild -project iosApp/SimpMusic.xcodeproj -scheme SimpMusic -configuration Debug -sdk iphoneos -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+          xcodebuild -project iosApp/SimpMusic.xcodeproj -scheme SimpMusic -configuration Debug -sdk iphoneos -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ENABLE_DEBUG_DYLIB=NO build
 
       - name: Verify packaged app
         run: |
           APP=build/ios/Build/Products/Debug-iphoneos/SimpMusic.app
           test -x "$APP/SimpMusic"
           test -f "$APP/Assets.car"
+          test ! -e "$APP/SimpMusic.debug.dylib"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' "$APP/Info.plist" >/dev/null
+          if otool -L "$APP/SimpMusic" | grep -q '@rpath/SimpMusic.debug.dylib'; then
+            echo 'ERROR: app executable still depends on Xcode debug dylib and can fail immediately when sideloaded'
+            exit 1
+          fi
           otool -L "$APP/SimpMusic"
+          echo 'Launch packaging audit passed: no Xcode debug dylib dependency.'
 
       - name: Package IPA
         run: |
