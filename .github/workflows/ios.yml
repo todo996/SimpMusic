@@ -8,6 +8,7 @@ on:
 jobs:
   build-ios:
     runs-on: macos-15
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -66,7 +67,10 @@ jobs:
           for task in $RESOURCE_TASKS; do
             BUILT_PRODUCTS_DIR="$GITHUB_WORKSPACE/build/compose-resources" \
               UNLOCALIZED_RESOURCES_FOLDER_PATH=ComposeResourceStage \
-              ./gradlew ":composeApp:$task" --stacktrace --no-configuration-cache
+              ./gradlew ":composeApp:$task" \
+                -Pcompose.ios.resources.platform=iphonesimulator \
+                -Pcompose.ios.resources.archs=arm64 \
+                --stacktrace --no-configuration-cache
           done
           RESOURCE_ROOT=$(find "$GITHUB_WORKSPACE/build/compose-resources" -type d -path '*/compose-resources' -print -quit)
           if [ -z "$RESOURCE_ROOT" ]; then
