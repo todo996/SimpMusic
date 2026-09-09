@@ -27,7 +27,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import simpmusic.composeapp.generated.resources.Res
 import simpmusic.composeapp.generated.resources.music_video
 import simpmusic.composeapp.generated.resources.new_release
@@ -87,15 +86,13 @@ class HomeViewModel(
     val mainHomeThumbnail: StateFlow<String?> = _mainHomeThumbnail
 
     init {
-        if (runBlocking { dataStoreManager.cookie.first() }.isEmpty() &&
-            runBlocking {
-                dataStoreManager.shouldShowLogInRequiredAlert.first() == TRUE
-            }
-        ) {
-            _showLogInAlert.update { true }
-        }
         homeJob = Job()
         viewModelScope.launch {
+            if (dataStoreManager.cookie.first().isEmpty() &&
+                dataStoreManager.shouldShowLogInRequiredAlert.first() == TRUE
+            ) {
+                _showLogInAlert.update { true }
+            }
             regionCodeChart.value = dataStoreManager.chartKey.first()
             exploreChart(regionCodeChart.value ?: "ZZ")
             language = dataStoreManager.getString(SELECTED_LANGUAGE).first()
@@ -182,26 +179,26 @@ class HomeViewModel(
     fun getHomeItemList(params: String? = null) {
         loading.value = true
         _homeListState.value = ListState.LOADING
-        language =
-            runBlocking {
-                dataStoreManager.getString(SELECTED_LANGUAGE).first()
-                    ?: SUPPORTED_LANGUAGE.codes.first()
-            }
-        regionCode = runBlocking { dataStoreManager.location.first() }
         homeJob?.cancel()
         homeJob =
             viewModelScope.launch {
+                language = dataStoreManager.getString(SELECTED_LANGUAGE).first() ?: SUPPORTED_LANGUAGE.codes.first()
+                regionCode = dataStoreManager.location.first()
+                val viewCount = org.jetbrains.compose.resources.getString(Res.string.view_count)
+                val song = org.jetbrains.compose.resources.getString(Res.string.song)
+                val newRelease = org.jetbrains.compose.resources.getString(Res.string.new_release)
+                val musicVideo = org.jetbrains.compose.resources.getString(Res.string.music_video)
                 combine(
                     homeRepository.getHomeData(
                         params,
-                        getString(Res.string.view_count),
-                        getString(Res.string.song),
+                        viewCount,
+                        song,
                     ),
                     homeRepository.getMoodAndMomentsData(),
                     homeRepository.getChartData(dataStoreManager.chartKey.first()),
                     homeRepository.getNewRelease(
-                        getString(Res.string.new_release),
-                        getString(Res.string.music_video),
+                        newRelease,
+                        musicVideo,
                     ),
                 ) { home, exploreMood, exploreChart, newRelease ->
                     HomeDataCombine(home, exploreMood, exploreChart, newRelease)
@@ -293,8 +290,8 @@ class HomeViewModel(
                 homeRepository
                     .getHomeDataContinue(
                         continuation,
-                        getString(Res.string.view_count),
-                        getString(Res.string.song),
+                        org.jetbrains.compose.resources.getString(Res.string.view_count),
+                        org.jetbrains.compose.resources.getString(Res.string.song),
                     ).collect { home ->
                         when (home) {
                             is Resource.Success -> {

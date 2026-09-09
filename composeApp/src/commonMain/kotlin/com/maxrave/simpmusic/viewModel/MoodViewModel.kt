@@ -13,7 +13,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 
 class MoodViewModel(
@@ -35,8 +34,10 @@ class MoodViewModel(
     private var loadedParams: String? = null
 
     init {
-        regionCode = runBlocking { dataStoreManager.location.first() }
-        language = runBlocking { dataStoreManager.getString(SELECTED_LANGUAGE).first() }
+        viewModelScope.launch {
+            regionCode = dataStoreManager.location.first()
+            language = dataStoreManager.getString(SELECTED_LANGUAGE).first()
+        }
     }
 
     fun getMood(params: String) {

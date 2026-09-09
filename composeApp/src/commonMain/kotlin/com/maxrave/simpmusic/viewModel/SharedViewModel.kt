@@ -316,7 +316,7 @@ class SharedViewModel(
 //            controllerStateJob.join()
         }
 
-        runBlocking {
+        viewModelScope.launch {
             dataStoreManager.getString("miniplayer_guide").first().let {
                 isFirstMiniplayer = it != STATUS_DONE
             }

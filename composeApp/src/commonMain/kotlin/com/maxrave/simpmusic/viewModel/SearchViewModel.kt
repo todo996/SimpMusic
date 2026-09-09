@@ -26,7 +26,6 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import org.jetbrains.compose.resources.StringResource
 import simpmusic.composeapp.generated.resources.Res
 import simpmusic.composeapp.generated.resources.albums
@@ -116,10 +115,12 @@ class SearchViewModel(
     var language: String? = null
 
     init {
-        regionCode = runBlocking { dataStoreManager.location.first() }
-        language = runBlocking { dataStoreManager.getString(SELECTED_LANGUAGE).first() }
-        getSearchHistory()
-        getMoodAndGenres()
+        viewModelScope.launch {
+            regionCode = dataStoreManager.location.first()
+            language = dataStoreManager.getString(SELECTED_LANGUAGE).first()
+            getSearchHistory()
+            getMoodAndGenres()
+        }
     }
 
     /**
