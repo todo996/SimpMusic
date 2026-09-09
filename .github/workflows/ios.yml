@@ -22,7 +22,9 @@ jobs:
           cache: gradle
 
       - name: Audit and prepare iOS KMP sources
-        run: python3 scripts/ios/prepare_kmp.py
+        run: |
+          python3 scripts/ios/prepare_kmp.py
+          python3 scripts/ios/prepare_compose_kmp.py
 
       - name: Compile core for iOS simulator
         run: |
