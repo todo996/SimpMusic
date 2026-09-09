@@ -14,11 +14,11 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Select Xcode 26.3
+      - name: Select Xcode 16.4 for iOS 18 compatibility
         run: |
-          sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
           xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
+          test "$(xcrun --sdk iphoneos --show-sdk-version)" = "18.5"
 
       - name: Set up JDK 21
         uses: actions/setup-java@v5
@@ -46,6 +46,66 @@ jobs:
       - name: Build device framework
         run: ./gradlew :composeApp:linkDebugFrameworkIosArm64 --stacktrace --no-configuration-cache
 
+      - name: Reject iOS 26-only runtime symbols
+        run: |
+          FRAMEWORK=composeApp/build/bin/iosArm64/debugFramework/ComposeApp.framework/ComposeApp
+          if nm -u "$FRAMEWORK" | grep -q '_OBJC_CLASS_\$_UIViewLayoutRegion'; then
+            echo 'ERROR: framework still references iOS 26-only UIViewLayoutRegion'
+            exit 1
+          fi
+          echo 'Runtime symbol audit passed for iOS 18.'
+
+      - name: Generate iOS app icon assets
+        run: |
+          set -euo pipefail
+          SRC=androidApp/src/main/res/mipmap-xxxhdpi/ic_launcher.webp
+          SET=iosApp/Assets.xcassets/AppIcon.appiconset
+          mkdir -p "$SET"
+          make_icon() { sips -s format png -z "$1" "$1" "$SRC" --out "$SET/$2" >/dev/null; }
+          make_icon 40 icon-20@2x.png
+          make_icon 60 icon-20@3x.png
+          make_icon 58 icon-29@2x.png
+          make_icon 87 icon-29@3x.png
+          make_icon 80 icon-40@2x.png
+          make_icon 120 icon-40@3x.png
+          make_icon 120 icon-60@2x.png
+          make_icon 180 icon-60@3x.png
+          make_icon 20 icon-20-ipad.png
+          make_icon 40 icon-20-ipad@2x.png
+          make_icon 29 icon-29-ipad.png
+          make_icon 58 icon-29-ipad@2x.png
+          make_icon 40 icon-40-ipad.png
+          make_icon 80 icon-40-ipad@2x.png
+          make_icon 76 icon-76-ipad.png
+          make_icon 152 icon-76-ipad@2x.png
+          make_icon 167 icon-83.5-ipad@2x.png
+          make_icon 1024 icon-marketing.png
+          cat > "$SET/Contents.json" <<'JSON'
+          {
+            "images" : [
+              {"filename":"icon-20@2x.png","idiom":"iphone","scale":"2x","size":"20x20"},
+              {"filename":"icon-20@3x.png","idiom":"iphone","scale":"3x","size":"20x20"},
+              {"filename":"icon-29@2x.png","idiom":"iphone","scale":"2x","size":"29x29"},
+              {"filename":"icon-29@3x.png","idiom":"iphone","scale":"3x","size":"29x29"},
+              {"filename":"icon-40@2x.png","idiom":"iphone","scale":"2x","size":"40x40"},
+              {"filename":"icon-40@3x.png","idiom":"iphone","scale":"3x","size":"40x40"},
+              {"filename":"icon-60@2x.png","idiom":"iphone","scale":"2x","size":"60x60"},
+              {"filename":"icon-60@3x.png","idiom":"iphone","scale":"3x","size":"60x60"},
+              {"filename":"icon-20-ipad.png","idiom":"ipad","scale":"1x","size":"20x20"},
+              {"filename":"icon-20-ipad@2x.png","idiom":"ipad","scale":"2x","size":"20x20"},
+              {"filename":"icon-29-ipad.png","idiom":"ipad","scale":"1x","size":"29x29"},
+              {"filename":"icon-29-ipad@2x.png","idiom":"ipad","scale":"2x","size":"29x29"},
+              {"filename":"icon-40-ipad.png","idiom":"ipad","scale":"1x","size":"40x40"},
+              {"filename":"icon-40-ipad@2x.png","idiom":"ipad","scale":"2x","size":"40x40"},
+              {"filename":"icon-76-ipad.png","idiom":"ipad","scale":"1x","size":"76x76"},
+              {"filename":"icon-76-ipad@2x.png","idiom":"ipad","scale":"2x","size":"76x76"},
+              {"filename":"icon-83.5-ipad@2x.png","idiom":"ipad","scale":"2x","size":"83.5x83.5"},
+              {"filename":"icon-marketing.png","idiom":"ios-marketing","scale":"1x","size":"1024x1024"}
+            ],
+            "info" : {"author":"xcode","version":1}
+          }
+          JSON
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -57,6 +117,14 @@ jobs:
       - name: Build unsigned app
         run: |
           xcodebuild -project iosApp/SimpMusic.xcodeproj -scheme SimpMusic -configuration Debug -sdk iphoneos -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
+
+      - name: Verify packaged app
+        run: |
+          APP=build/ios/Build/Products/Debug-iphoneos/SimpMusic.app
+          test -x "$APP/SimpMusic"
+          test -f "$APP/Assets.car"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' "$APP/Info.plist" >/dev/null
+          otool -L "$APP/SimpMusic"
 
       - name: Package IPA
         run: |
