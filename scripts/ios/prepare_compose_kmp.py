@@ -17,35 +17,29 @@ def rewrite(path: Path, transform):
         changed.append(path.relative_to(ROOT).as_posix())
 
 
-# 0) Keep the iOS Compose runtime on the same generation as the Compose plugin.
-# Compose Multiplatform 1.11.1 does NOT publish Material3 as 1.11.1. JetBrains'
-# compatibility table maps it to Material3 1.11.0-alpha07 and Material3 Adaptive
-# 1.3.0-alpha07. The upstream catalog pins Material3 1.12.0-alpha01, which
-# transitively upgrades foundation/ui + Skiko to the Compose 1.12 line and makes
-# the produced framework reference newer Apple SDK symbols (UIViewLayoutRegion /
-# SwiftUICore) that Xcode 16.4 cannot link. Use the official 1.11 generation
-# coordinates and stable Compottie, which stays on the matching Skiko line.
+# 0) iOS 18 compatibility.
+# Compose Multiplatform 1.11.x introduced a UIKit implementation that references
+# UIViewLayoutRegion, an iOS 26 SDK symbol. That can be made to link with Xcode 26,
+# but the resulting binary is not suitable for our iOS 16+ / iOS 18 device target.
+# Pin the complete Compose stack to the last 1.10 generation instead. JetBrains'
+# 1.10.3 release maps Material3 to 1.10.0-alpha05 and Adaptive to 1.3.0-alpha02.
 versions = ROOT / "gradle/libs.versions.toml"
 
 def patch_versions(text: str) -> str:
-    text = re.sub(
-        r'^material3-multiplatform\s*=\s*"[^"]+".*$',
-        'material3-multiplatform = "1.11.0-alpha07" # iOS CI: official Material3 for Compose Multiplatform 1.11.1',
-        text,
-        flags=re.M,
-    )
-    text = re.sub(
-        r'^adaptive\s*=\s*"[^"]+".*$',
-        'adaptive = "1.3.0-alpha07" # iOS CI: official Material3 Adaptive for Compose Multiplatform 1.11.1',
-        text,
-        flags=re.M,
-    )
-    text = re.sub(
-        r'^compottie\s*=\s*"[^"]+".*$',
-        'compottie = "2.2.2" # iOS CI: stable build matching the Compose 1.11 Skiko line',
-        text,
-        flags=re.M,
-    )
+    replacements = {
+        "composeMultiplatform": 'composeMultiplatform = "1.10.3" # iOS 18: avoid iOS-26-only UIViewLayoutRegion from Compose 1.11+',
+        "componentsResources": 'componentsResources = "1.10.3" # keep resources aligned with Compose 1.10.3',
+        "material3-multiplatform": 'material3-multiplatform = "1.10.0-alpha05" # official Material3 generation for Compose 1.10.3',
+        "adaptive": 'adaptive = "1.3.0-alpha02" # official Material3 Adaptive generation for Compose 1.10.3',
+        "compottie": 'compottie = "2.2.2" # stable build; do not pull Compose 1.12/Skiko snapshots into iOS',
+    }
+    for key, replacement in replacements.items():
+        text = re.sub(
+            rf'^{re.escape(key)}\s*=\s*"[^"]+".*$',
+            replacement,
+            text,
+            flags=re.M,
+        )
     return text
 
 rewrite(versions, patch_versions)
@@ -72,7 +66,6 @@ rewrite(
 )
 
 # 3) AllExt mixes pure common utilities with unused JVM-only File/ZIP helpers.
-# Keep the portable utilities and remove the unused JVM-only helpers from the iOS build.
 all_ext = COMMON / "com/maxrave/simpmusic/extension/AllExt.kt"
 
 def patch_all_ext(text: str) -> str:
@@ -164,7 +157,7 @@ for rel in (
         ),
     )
 
-# 6) SharedViewModel file output must be KMP. Okio is already versioned by the project.
+# 6) SharedViewModel file output must be KMP.
 shared = COMMON / "com/maxrave/simpmusic/viewModel/SharedViewModel.kt"
 
 def patch_shared(text: str) -> str:
@@ -178,10 +171,8 @@ def patch_shared(text: str) -> str:
 
 rewrite(shared, patch_shared)
 
-# Ensure Okio is directly available to composeApp commonMain and opt the Native
-# compile into both standard and Expressive Material3 experimental APIs used by
-# the shared UI. MaterialExpressiveTheme and LinearWavyProgressIndicator use
-# ExperimentalMaterial3ExpressiveApi, not ExperimentalMaterial3Api.
+# Ensure Okio is directly available to composeApp commonMain and opt into the
+# Material3 experimental APIs already used by the shared UI.
 build = APP / "build.gradle.kts"
 def patch_build(text: str) -> str:
     if "implementation(libs.okio)" not in text:
