@@ -30,6 +30,7 @@ jobs:
       - name: Audit and prepare iOS KMP sources
         run: |
           git -C core apply --whitespace=nowarn ../scripts/ios/core_override.patch
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_crypto_override.patch
           python3 scripts/ios/prepare_kmp.py
           python3 scripts/ios/prepare_compose_kmp.py
 
