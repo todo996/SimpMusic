@@ -52,33 +52,26 @@ jobs:
       - name: Build device framework
         run: ./gradlew :composeApp:linkDebugFrameworkIosArm64 --stacktrace --no-configuration-cache
 
-      - name: Stage Compose iOS resources
+      - name: Locate Compose iOS resources
         run: |
           set -euo pipefail
-          rm -rf build/compose-resources
-          mkdir -p build/compose-resources
-          RESOURCE_TASKS=$(./gradlew :composeApp:tasks --all --quiet | awk '$1 ~ /^sync.*ComposeResourcesForIos$/ { print $1 }')
-          if [ -z "$RESOURCE_TASKS" ]; then
-            echo 'ERROR: Compose iOS resource sync task was not generated'
+          RESOURCE_BASE="$GITHUB_WORKSPACE/composeApp/build/generated/compose/resourceGenerator/assembledResources"
+          SIM_RESOURCE_ROOT=$(find "$RESOURCE_BASE" -type d -path '*iosSimulatorArm64Main/composeResources' -print -quit)
+          DEVICE_RESOURCE_ROOT=$(find "$RESOURCE_BASE" -type d -path '*iosArm64Main/composeResources' -print -quit)
+          if [ -z "$SIM_RESOURCE_ROOT" ]; then
+            SIM_RESOURCE_ROOT=$(find "$RESOURCE_BASE" -type d -name composeResources -print -quit)
+          fi
+          if [ -z "$DEVICE_RESOURCE_ROOT" ]; then
+            DEVICE_RESOURCE_ROOT="$SIM_RESOURCE_ROOT"
+          fi
+          if [ -z "$SIM_RESOURCE_ROOT" ] || [ -z "$DEVICE_RESOURCE_ROOT" ]; then
+            echo "ERROR: assembled Compose iOS resources were not found under $RESOURCE_BASE"
             exit 1
           fi
-          echo 'Compose iOS resource sync tasks:'
-          printf '%s\n' "$RESOURCE_TASKS"
-          for task in $RESOURCE_TASKS; do
-            BUILT_PRODUCTS_DIR="$GITHUB_WORKSPACE/build/compose-resources" \
-              UNLOCALIZED_RESOURCES_FOLDER_PATH=ComposeResourceStage \
-              ./gradlew ":composeApp:$task" \
-                -Pcompose.ios.resources.platform=iphonesimulator \
-                -Pcompose.ios.resources.archs=arm64 \
-                --stacktrace --no-configuration-cache
-          done
-          RESOURCE_ROOT=$(find "$GITHUB_WORKSPACE/build/compose-resources" -type d -path '*/compose-resources' -print -quit)
-          if [ -z "$RESOURCE_ROOT" ]; then
-            echo 'ERROR: Compose iOS resources were not staged'
-            exit 1
-          fi
-          test -f "$RESOURCE_ROOT/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
-          echo "COMPOSE_RESOURCE_ROOT=$RESOURCE_ROOT" >> "$GITHUB_ENV"
+          test -f "$SIM_RESOURCE_ROOT/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
+          test -f "$DEVICE_RESOURCE_ROOT/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
+          echo "COMPOSE_SIM_RESOURCE_ROOT=$SIM_RESOURCE_ROOT" >> "$GITHUB_ENV"
+          echo "COMPOSE_DEVICE_RESOURCE_ROOT=$DEVICE_RESOURCE_ROOT" >> "$GITHUB_ENV"
 
       - name: Reject iOS 26-only runtime symbols
         run: |
@@ -195,7 +188,7 @@ jobs:
           SIM_APP=build/ios-simulator/Build/Products/Debug-iphonesimulator/SimpMusic.app
           test -x "$SIM_APP/SimpMusic"
           mkdir -p "$SIM_APP/compose-resources"
-          cp -R "$COMPOSE_RESOURCE_ROOT/." "$SIM_APP/compose-resources/"
+          cp -R "$COMPOSE_SIM_RESOURCE_ROOT" "$SIM_APP/compose-resources/composeResources"
           test -f "$SIM_APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
           xcrun simctl install "$DEVICE_ID" "$SIM_APP"
           set +e
@@ -211,6 +204,9 @@ jobs:
               LAUNCH_STATUS=$?
           fi
           set -e
+          xcrun simctl spawn "$DEVICE_ID" log show --last 3m --style compact \
+            --predicate 'process == "SimpMusic" OR eventMessage CONTAINS[c] "SimpMusic"' \
+            > build/simctl-system.log 2>&1 || true
           cat build/simctl-launch.log
           if [ "$LAUNCH_STATUS" -ne 0 ]; then
               echo "Simulator launch command failed with status $LAUNCH_STATUS"
@@ -238,7 +234,7 @@ jobs:
           test -x "$APP/SimpMusic"
           test -f "$APP/Assets.car"
           mkdir -p "$APP/compose-resources"
-          cp -R "$COMPOSE_RESOURCE_ROOT/." "$APP/compose-resources/"
+          cp -R "$COMPOSE_DEVICE_RESOURCE_ROOT" "$APP/compose-resources/composeResources"
           test -f "$APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
           test ! -e "$APP/SimpMusic.debug.dylib"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' "$APP/Info.plist" >/dev/null
@@ -268,5 +264,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SimpMusic-iOS-simulator-startup-log
-          path: build/simctl-launch.log
+          path: |
+            build/simctl-launch.log
+            build/simctl-system.log
           if-no-files-found: ignore
