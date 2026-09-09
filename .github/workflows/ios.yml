@@ -118,6 +118,83 @@ jobs:
           cd iosApp
           xcodegen generate
 
+      - name: Launch simulator smoke test
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          cp iosApp/project.yml build/project-device.yml
+          python3 - <<'PY'
+          from pathlib import Path
+
+          project = Path("iosApp/project.yml")
+          project.write_text(
+              project.read_text().replace(
+                  "../composeApp/build/bin/iosArm64/debugFramework",
+                  "../composeApp/build/bin/iosSimulatorArm64/debugFramework",
+              )
+          )
+          PY
+          (cd iosApp && xcodegen generate)
+
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c '
+          import json
+          import sys
+
+          devices = json.load(sys.stdin)["devices"]
+          for runtimes in devices.values():
+              for device in runtimes:
+                  if device["isAvailable"] and device["name"].startswith("iPhone"):
+                      print(device["udid"])
+                      raise SystemExit
+          raise SystemExit("No available iPhone simulator found")
+          ')
+          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+          xcodebuild \
+            -project iosApp/SimpMusic.xcodeproj \
+            -scheme SimpMusic \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -derivedDataPath build/ios-simulator \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            ENABLE_DEBUG_DYLIB=NO \
+            build
+
+          SIM_APP=build/ios-simulator/Build/Products/Debug-iphonesimulator/SimpMusic.app
+          test -x "$SIM_APP/SimpMusic"
+          xcrun simctl install "$DEVICE_ID" "$SIM_APP"
+          set +e
+          xcrun simctl launch --console "$DEVICE_ID" com.maxrave.simpmusic.ios > build/simctl-launch.log 2>&1 &
+          LAUNCH_PID=$!
+          sleep 15
+          if kill -0 "$LAUNCH_PID" 2>/dev/null; then
+              kill "$LAUNCH_PID" 2>/dev/null || true
+              wait "$LAUNCH_PID" 2>/dev/null || true
+              LAUNCH_STATUS=0
+          else
+              wait "$LAUNCH_PID"
+              LAUNCH_STATUS=$?
+          fi
+          set -e
+          cat build/simctl-launch.log
+          if [ "$LAUNCH_STATUS" -ne 0 ]; then
+              echo "Simulator launch command failed with status $LAUNCH_STATUS"
+              exit 1
+          fi
+          if ! xcrun simctl spawn "$DEVICE_ID" ps -A | grep -q '[S]impMusic'; then
+              echo 'Simulator app exited during the startup smoke test'
+              exit 1
+          fi
+          echo 'Simulator startup smoke test passed.'
+
+      - name: Regenerate device Xcode project
+        run: |
+          cp build/project-device.yml iosApp/project.yml
+          cd iosApp
+          xcodegen generate
+
       - name: Build unsigned app
         run: |
           xcodebuild -project iosApp/SimpMusic.xcodeproj -scheme SimpMusic -configuration Debug -sdk iphoneos -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ENABLE_DEBUG_DYLIB=NO build
@@ -149,3 +226,11 @@ jobs:
         with:
           name: SimpMusic-iOS-unsigned
           path: build/SimpMusic-unsigned.ipa
+
+      - name: Upload simulator startup log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpMusic-iOS-simulator-startup-log
+          path: build/simctl-launch.log
+          if-no-files-found: ignore
