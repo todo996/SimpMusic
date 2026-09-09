@@ -86,10 +86,19 @@ def patch_settings(text: str) -> str:
     text = text.replace("import java.time.Instant\n", "")
     text = text.replace("import java.time.ZoneId\n", "")
     text = text.replace("import java.time.format.DateTimeFormatter\n", "")
+
+    # Ensure required kotlinx-datetime imports exist even when the source did not
+    # already import TimeZone. The previous preflight only added toLocalDateTime
+    # when TimeZone was already present, which caused run #17 to fail.
+    if "import kotlinx.datetime.TimeZone\n" not in text:
+        anchor = "import kotlinx.datetime.LocalDateTime\n"
+        if anchor in text:
+            text = text.replace(anchor, anchor + "import kotlinx.datetime.TimeZone\n", 1)
+        else:
+            text = text.replace("package com.maxrave.simpmusic.ui.screen.home\n", "package com.maxrave.simpmusic.ui.screen.home\n\nimport kotlinx.datetime.TimeZone\n", 1)
     if "import kotlinx.datetime.toLocalDateTime\n" not in text:
         anchor = "import kotlinx.datetime.TimeZone\n"
-        if anchor in text:
-            text = text.replace(anchor, anchor + "import kotlinx.datetime.toLocalDateTime\n")
+        text = text.replace(anchor, anchor + "import kotlinx.datetime.toLocalDateTime\n", 1)
 
     old = '''DateTimeFormatter\n                            .ofPattern("yyyy-MM-dd HH:mm:ss")\n                            .withZone(ZoneId.systemDefault())\n                            .format(Instant.ofEpochMilli(lastCheckLong))'''
     new = '''kotlinx.datetime.Instant\n                            .fromEpochMilliseconds(lastCheckLong)\n                            .toLocalDateTime(TimeZone.currentSystemDefault())\n                            .format(LocalDateTime.Format { byUnicodePattern("yyyy-MM-dd HH:mm:ss") })'''
