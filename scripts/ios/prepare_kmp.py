@@ -25,6 +25,7 @@ versions.write_text(t)
 
 core = ROOT / "core"
 changed = []
+removed = []
 
 def rewrite(path: Path, transform):
     if not path.exists():
@@ -35,15 +36,17 @@ def rewrite(path: Path, transform):
         path.write_text(updated)
         changed.append(path.relative_to(ROOT).as_posix())
 
-# 3) Dispatchers.IO is not public on the Kotlin/Native version used here.
+# 3) Common code must avoid JVM-only coroutine and Throwable APIs.
 for p in core.rglob("*.kt"):
     if "src/commonMain/" not in p.as_posix():
         continue
-    rewrite(p, lambda text: text.replace("Dispatchers.IO", "Dispatchers.Default"))
+    rewrite(
+        p,
+        lambda text: text.replace("Dispatchers.IO", "Dispatchers.Default").replace(".localizedMessage", ".message"),
+    )
 
-# 4) Normalize duplicated actual declarations in ktorExt. iosMain is already the
-# shared parent of iosArm64Main and iosSimulatorArm64Main, so target copies conflict.
-removed = []
+# 4) Normalize duplicated actual declarations. iosMain is the shared parent of
+# iosArm64Main and iosSimulatorArm64Main, so duplicate target copies conflict.
 ktor_ext = core / "service" / "ktorExt" / "src"
 for source_set in ("iosArm64Main", "iosSimulatorArm64Main"):
     base = ktor_ext / source_set / "kotlin" / "com" / "maxrave" / "ktorext"
@@ -51,6 +54,19 @@ for source_set in ("iosArm64Main", "iosSimulatorArm64Main"):
         base / f"Engine.{source_set.removesuffix('Main')}.kt",
         base / "encoding" / f"BrotliEncoder.{source_set.removesuffix('Main')}.kt",
     ):
+        if p.exists():
+            p.unlink()
+            removed.append(p.relative_to(ROOT).as_posix())
+
+# data has the same duplicate layout for the media loader/handler.
+data_src = core / "data" / "src"
+for source_set in ("iosArm64Main", "iosSimulatorArm64Main"):
+    suffix = source_set.removesuffix("Main")
+    for rel in (
+        f"kotlin/com/maxrave/data/di/loader/Loader.{suffix}.kt",
+        f"kotlin/com/maxrave/data/mediaservice/ExpectMediaHandler.{suffix}.kt",
+    ):
+        p = data_src / source_set / rel
         if p.exists():
             p.unlink()
             removed.append(p.relative_to(ROOT).as_posix())
@@ -71,8 +87,6 @@ rewrite(
 remote_store = scraper / "cipher" / "RemotePlayerConfigStore.kt"
 rewrite(remote_store, lambda text: text.replace("    @Volatile\n", ""))
 
-# kotlin-reflect full/memberProperties is JVM-only and asMap has no call sites in
-# the pinned core revision, so keep the API available without pulling JVM reflection.
 map_ext = scraper / "extension" / "MapExt.kt"
 rewrite(
     map_ext,
@@ -109,7 +123,7 @@ def patch_utils(text: str) -> str:
     return text
 rewrite(utils, patch_utils)
 
-# 6) The data layer has the same JVM String.format leakage in commonMain.
+# 6) The data layer has JVM String.format leakage in commonMain.
 for rel in (
     "data/src/commonMain/kotlin/com/maxrave/data/parser/search/SongResultParser.kt",
     "data/src/commonMain/kotlin/com/maxrave/data/parser/search/VideoResultParser.kt",
@@ -132,8 +146,7 @@ rewrite(
     ),
 )
 
-# 7) Okio Sink/Source are Closeable in common code but not JVM AutoCloseable on
-# Kotlin/Native. Avoid stdlib use{} resolving to the JVM-only AutoCloseable overload.
+# 7) Okio Sink/Source are Closeable in common code but not JVM AutoCloseable on Native.
 message_codec = core / "service/listenTogether/src/commonMain/kotlin/org/simpmusic/listentogether/MessageCodec.kt"
 def patch_message_codec(text: str) -> str:
     text = text.replace(
@@ -148,32 +161,18 @@ def patch_message_codec(text: str) -> str:
 rewrite(message_codec, patch_message_codec)
 
 # 8) Room KMP requires a generated database constructor on non-Android targets.
-# KSP generates the actual implementation for both iosSimulatorArm64 and iosArm64.
 music_db = core / "data/src/commonMain/kotlin/com/maxrave/data/db/MusicDatabase.kt"
 def patch_room_database(text: str) -> str:
     if "import androidx.room.ConstructedBy\n" not in text:
-        text = text.replace(
-            "import androidx.room.AutoMigration\n",
-            "import androidx.room.AutoMigration\nimport androidx.room.ConstructedBy\n",
-        )
+        text = text.replace("import androidx.room.AutoMigration\n", "import androidx.room.AutoMigration\nimport androidx.room.ConstructedBy\n")
     if "import androidx.room.RoomDatabaseConstructor\n" not in text:
-        text = text.replace(
-            "import androidx.room.RoomDatabase\n",
-            "import androidx.room.RoomDatabase\nimport androidx.room.RoomDatabaseConstructor\n",
-        )
+        text = text.replace("import androidx.room.RoomDatabase\n", "import androidx.room.RoomDatabase\nimport androidx.room.RoomDatabaseConstructor\n")
     marker = ")\n@TypeConverters(Converters::class)\nabstract class MusicDatabase"
     if "@ConstructedBy(MusicDatabaseConstructor::class)" not in text:
-        text = text.replace(
-            marker,
-            ")\n@ConstructedBy(MusicDatabaseConstructor::class)\n@TypeConverters(Converters::class)\nabstract class MusicDatabase",
-            1,
-        )
+        text = text.replace(marker, ")\n@ConstructedBy(MusicDatabaseConstructor::class)\n@TypeConverters(Converters::class)\nabstract class MusicDatabase", 1)
     constructor = '''\n\n@Suppress("KotlinNoActualForExpect")\nexpect object MusicDatabaseConstructor : RoomDatabaseConstructor<MusicDatabase> {\n    override fun initialize(): MusicDatabase\n}\n'''
     if "expect object MusicDatabaseConstructor" not in text:
-        text = text.replace(
-            "\nexpect fun getDatabaseBuilder(converters: Converters): RoomDatabase.Builder<MusicDatabase>\n",
-            constructor + "\nexpect fun getDatabaseBuilder(converters: Converters): RoomDatabase.Builder<MusicDatabase>\n",
-        )
+        text = text.replace("\nexpect fun getDatabaseBuilder(converters: Converters): RoomDatabase.Builder<MusicDatabase>\n", constructor + "\nexpect fun getDatabaseBuilder(converters: Converters): RoomDatabase.Builder<MusicDatabase>\n")
     return text
 rewrite(music_db, patch_room_database)
 
