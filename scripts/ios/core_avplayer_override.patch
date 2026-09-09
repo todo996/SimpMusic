@@ -1,0 +1,40 @@
+diff --git a/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/IosAvPlayerAdapter.kt b/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/IosAvPlayerAdapter.kt
+index c465069..b5e77e1 100644
+--- a/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/IosAvPlayerAdapter.kt
++++ b/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/IosAvPlayerAdapter.kt
+@@ -1,3 +1,5 @@
++@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
++
+ package com.maxrave.data.mediaservice
+ 
+ import com.maxrave.domain.data.player.GenericMediaItem
+@@ -18,9 +20,20 @@ import kotlinx.coroutines.isActive
+ import kotlinx.coroutines.launch
+ import platform.AVFoundation.AVPlayer
+ import platform.AVFoundation.AVPlayerItem
++import platform.AVFoundation.currentItem
++import platform.AVFoundation.currentTime
++import platform.AVFoundation.duration
++import platform.AVFoundation.pause
++import platform.AVFoundation.play
++import platform.AVFoundation.rate
++import platform.AVFoundation.replaceCurrentItemWithPlayerItem
++import platform.AVFoundation.seekToTime
++import platform.AVFoundation.volume
+ import platform.CoreMedia.CMTimeGetSeconds
+ import platform.CoreMedia.CMTimeMakeWithSeconds
+ import platform.Foundation.NSURL
++import kotlinx.cinterop.CValue
++import platform.CoreMedia.CMTime
+ import kotlin.math.max
+ import kotlin.math.min
+ 
+@@ -427,7 +440,7 @@ class IosAvPlayerAdapter(
+         avPlayer.volume = (internalVolume * internalSleepFadeFactor).coerceIn(0f, 1f)
+     }
+ 
+-    private fun secondsToMillis(time: platform.CoreMedia.CMTime): Long {
++    private fun secondsToMillis(time: CValue<CMTime>): Long {
+         val seconds = CMTimeGetSeconds(time)
+         return if (seconds.isFinite() && seconds > 0.0) (seconds * 1000.0).toLong() else 0L
+     }
