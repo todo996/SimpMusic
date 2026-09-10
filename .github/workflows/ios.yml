@@ -335,6 +335,13 @@ jobs:
           cp -R "$COMPOSE_RESOURCE_ROOT/composeResources" "$APP/compose-resources/"
           test -f "$APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
           test ! -e "$APP/SimpMusic.debug.dylib"
+          PLIST_FRAME_DURATION=$(/usr/libexec/PlistBuddy -c 'Print :CADisableMinimumFrameDurationOnPhone' "$APP/Info.plist")
+          if [[ "${PLIST_FRAME_DURATION,,}" != "true" ]]; then
+            echo "ERROR: CADisableMinimumFrameDurationOnPhone must be true; got '$PLIST_FRAME_DURATION'"
+            exit 1
+          fi
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")" = '2.1.1'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = '59'
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' "$APP/Info.plist" >/dev/null
           if otool -L "$APP/SimpMusic" | grep -q '@rpath/SimpMusic.debug.dylib'; then
             echo 'ERROR: app executable still depends on Xcode debug dylib and can fail immediately when sideloaded'
@@ -369,4 +376,3 @@ jobs:
             build/simctl-probe.log
             build/crash-diagnostics
           if-no-files-found: ignore
-
