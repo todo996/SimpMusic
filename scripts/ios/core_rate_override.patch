@@ -1,0 +1,14 @@
+diff --git a/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/IosAvPlayerAdapter.kt b/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/IosAvPlayerAdapter.kt
+index b5e77e1..6a8aeac 100644
+--- a/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/IosAvPlayerAdapter.kt
++++ b/data/src/iosMain/kotlin/com/maxrave/data/mediaservice/IosAvPlayerAdapter.kt
+@@ -348,7 +348,7 @@ class IosAvPlayerAdapter(
+             val url = NSURL(string = uri) ?: return@launch
+             avPlayer.replaceCurrentItemWithPlayerItem(AVPlayerItem(uRL = url))
+             applyVolume()
+-            avPlayer.rate = if (autoPlay) internalPlaybackParameters.speed else 0.0
++            avPlayer.rate = if (autoPlay) internalPlaybackParameters.speed else 0f
+             setPlaybackState(PlayerConstants.STATE_READY)
+             notifyListeners { it.onMediaItemTransition(mediaItem, PlayerConstants.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED) }
+         }
+

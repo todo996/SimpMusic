@@ -1,0 +1,31 @@
+diff --git a/data/src/iosMain/kotlin/com/maxrave/data/di/loader/Loader.ios.kt b/data/src/iosMain/kotlin/com/maxrave/data/di/loader/Loader.ios.kt
+index fdba2d4..bfc4d9f 100644
+--- a/data/src/iosMain/kotlin/com/maxrave/data/di/loader/Loader.ios.kt
++++ b/data/src/iosMain/kotlin/com/maxrave/data/di/loader/Loader.ios.kt
+@@ -2,6 +2,7 @@ package com.maxrave.data.di.loader
+ 
+ import com.maxrave.common.Config
+ import com.maxrave.data.mediaservice.IosAvPlayerAdapter
++import com.maxrave.domain.repository.CacheRepository
+ import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
+ import kotlinx.coroutines.CoroutineScope
+ import kotlinx.coroutines.Dispatchers
+@@ -16,6 +17,17 @@ actual fun loadMediaService() {
+             single<CoroutineScope>(named(Config.SERVICE_SCOPE), createdAtStart = true) {
+                 CoroutineScope(SupervisorJob() + Dispatchers.Main)
+             }
++            // AVPlayer owns streaming on iOS; keep the common cache API available so startup
++            // ViewModels can be constructed even though ExoPlayer's disk cache is Android-only.
++            single<CacheRepository>(createdAtStart = true) {
++                object : CacheRepository {
++                    override suspend fun getCacheSize(cacheName: String): Long = 0L
++
++                    override fun clearCache(cacheName: String) = Unit
++
++                    override suspend fun getAllCacheKeys(cacheName: String): List<String> = emptyList()
++                }
++            }
+             single<MediaPlayerInterface>(createdAtStart = true) {
+                 IosAvPlayerAdapter(
+                     streamRepository = get(),
+

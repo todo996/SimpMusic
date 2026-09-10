@@ -4,3 +4,4 @@ package com.maxrave.simpmusic.expect
 actual fun toggleMiniPlayer() {
     // Do nothing on iOS
 }
+

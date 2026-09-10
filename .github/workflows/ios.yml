@@ -1,0 +1,372 @@
+name: Build iOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ios-port, 'codex/**']
+
+jobs:
+  build-ios:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Select Xcode 16.4 for iOS 18 compatibility
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          xcodebuild -version
+          test "$(xcrun --sdk iphoneos --show-sdk-version)" = "18.5"
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: microsoft
+          cache: gradle
+
+      - name: Audit and prepare iOS KMP sources
+        run: |
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_override.patch
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_crypto_override.patch
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_avplayer_override.patch
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_rate_override.patch
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_cache_override.patch
+          python3 scripts/ios/prepare_kmp.py
+          python3 scripts/ios/prepare_compose_kmp.py
+
+      - name: Compile core for iOS simulator
+        run: |
+          ./gradlew \
+            :common:compileKotlinIosSimulatorArm64 \
+            :domain:compileKotlinIosSimulatorArm64 \
+            :data:compileKotlinIosSimulatorArm64 \
+            --stacktrace --no-configuration-cache --no-daemon
+
+      - name: Build simulator framework
+        run: ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64 --stacktrace --no-configuration-cache --no-daemon
+
+      - name: Build device framework
+        run: ./gradlew :composeApp:linkDebugFrameworkIosArm64 --stacktrace --no-configuration-cache --no-daemon
+
+      - name: Locate Compose iOS resources
+        run: |
+          set -euo pipefail
+          RESOURCE_FILE=$(find "$GITHUB_WORKSPACE/composeApp/build" -type f \
+            -path '*/preparedResources/commonMain/composeResources/values/strings.commonMain.cvr' \
+            -print -quit)
+          if [ -z "$RESOURCE_FILE" ]; then
+            echo 'ERROR: prepared Compose resource strings.commonMain.cvr was not found'
+            exit 1
+          fi
+          SOURCE_RESOURCE_ROOT=$(dirname "$(dirname "$RESOURCE_FILE")")
+          STAGED_RESOURCE_ROOT="$GITHUB_WORKSPACE/build/ios-compose-resources/composeResources/simpmusic.composeapp.generated.resources"
+          mkdir -p "$STAGED_RESOURCE_ROOT"
+          cp -R "$SOURCE_RESOURCE_ROOT/." "$STAGED_RESOURCE_ROOT/"
+          test -f "$GITHUB_WORKSPACE/build/ios-compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
+          echo "COMPOSE_RESOURCE_ROOT=$GITHUB_WORKSPACE/build/ios-compose-resources" >> "$GITHUB_ENV"
+
+      - name: Reject iOS 26-only runtime symbols
+        run: |
+          FRAMEWORK=composeApp/build/bin/iosArm64/debugFramework/ComposeApp.framework/ComposeApp
+          if nm -u "$FRAMEWORK" | grep -q '_OBJC_CLASS_\$_UIViewLayoutRegion'; then
+            echo 'ERROR: framework still references iOS 26-only UIViewLayoutRegion'
+            exit 1
+          fi
+          echo 'Runtime symbol audit passed for iOS 18.'
+
+      - name: Generate iOS app icon assets
+        run: |
+          set -euo pipefail
+          SRC=androidApp/src/main/res/mipmap-xxxhdpi/ic_launcher.webp
+          SET=iosApp/Assets.xcassets/AppIcon.appiconset
+          mkdir -p "$SET"
+          make_icon() { sips -s format png -z "$1" "$1" "$SRC" --out "$SET/$2" >/dev/null; }
+          make_icon 40 icon-20@2x.png
+          make_icon 60 icon-20@3x.png
+          make_icon 58 icon-29@2x.png
+          make_icon 87 icon-29@3x.png
+          make_icon 80 icon-40@2x.png
+          make_icon 120 icon-40@3x.png
+          make_icon 120 icon-60@2x.png
+          make_icon 180 icon-60@3x.png
+          make_icon 20 icon-20-ipad.png
+          make_icon 40 icon-20-ipad@2x.png
+          make_icon 29 icon-29-ipad.png
+          make_icon 58 icon-29-ipad@2x.png
+          make_icon 40 icon-40-ipad.png
+          make_icon 80 icon-40-ipad@2x.png
+          make_icon 76 icon-76-ipad.png
+          make_icon 152 icon-76-ipad@2x.png
+          make_icon 167 icon-83.5-ipad@2x.png
+          make_icon 1024 icon-marketing.png
+          cat > "$SET/Contents.json" <<'JSON'
+          {
+            "images" : [
+              {"filename":"icon-20@2x.png","idiom":"iphone","scale":"2x","size":"20x20"},
+              {"filename":"icon-20@3x.png","idiom":"iphone","scale":"3x","size":"20x20"},
+              {"filename":"icon-29@2x.png","idiom":"iphone","scale":"2x","size":"29x29"},
+              {"filename":"icon-29@3x.png","idiom":"iphone","scale":"3x","size":"29x29"},
+              {"filename":"icon-40@2x.png","idiom":"iphone","scale":"2x","size":"40x40"},
+              {"filename":"icon-40@3x.png","idiom":"iphone","scale":"3x","size":"40x40"},
+              {"filename":"icon-60@2x.png","idiom":"iphone","scale":"2x","size":"60x60"},
+              {"filename":"icon-60@3x.png","idiom":"iphone","scale":"3x","size":"60x60"},
+              {"filename":"icon-20-ipad.png","idiom":"ipad","scale":"1x","size":"20x20"},
+              {"filename":"icon-20-ipad@2x.png","idiom":"ipad","scale":"2x","size":"20x20"},
+              {"filename":"icon-29-ipad.png","idiom":"ipad","scale":"1x","size":"29x29"},
+              {"filename":"icon-29-ipad@2x.png","idiom":"ipad","scale":"2x","size":"29x29"},
+              {"filename":"icon-40-ipad.png","idiom":"ipad","scale":"1x","size":"40x40"},
+              {"filename":"icon-40-ipad@2x.png","idiom":"ipad","scale":"2x","size":"40x40"},
+              {"filename":"icon-76-ipad.png","idiom":"ipad","scale":"1x","size":"76x76"},
+              {"filename":"icon-76-ipad@2x.png","idiom":"ipad","scale":"2x","size":"76x76"},
+              {"filename":"icon-83.5-ipad@2x.png","idiom":"ipad","scale":"2x","size":"83.5x83.5"},
+              {"filename":"icon-marketing.png","idiom":"ios-marketing","scale":"1x","size":"1024x1024"}
+            ],
+            "info" : {"author":"xcode","version":1}
+          }
+          JSON
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          cd iosApp
+          xcodegen generate
+
+      - name: Launch simulator smoke test
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          cp iosApp/project.yml build/project-device.yml
+          python3 - <<'PY'
+          from pathlib import Path
+
+          project = Path("iosApp/project.yml")
+          project.write_text(
+              project.read_text().replace(
+                  "../composeApp/build/bin/iosArm64/debugFramework",
+                  "../composeApp/build/bin/iosSimulatorArm64/debugFramework",
+              )
+          )
+          PY
+          (cd iosApp && xcodegen generate)
+
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c '
+          import json
+          import sys
+
+          devices = json.load(sys.stdin)["devices"]
+          for runtimes in devices.values():
+              for device in runtimes:
+                  if device["isAvailable"] and device["name"].startswith("iPhone"):
+                      print(device["udid"])
+                      raise SystemExit
+          raise SystemExit("No available iPhone simulator found")
+          ')
+          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+          xcodebuild \
+            -project iosApp/SimpMusic.xcodeproj \
+            -scheme SimpMusic \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -derivedDataPath build/ios-simulator \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            ENABLE_DEBUG_DYLIB=NO \
+            build
+
+          SIM_APP=build/ios-simulator/Build/Products/Debug-iphonesimulator/SimpMusic.app
+          test -x "$SIM_APP/SimpMusic"
+          mkdir -p "$SIM_APP/compose-resources"
+          cp -R "$COMPOSE_RESOURCE_ROOT/composeResources" "$SIM_APP/compose-resources/"
+          test -f "$SIM_APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
+          xcrun simctl install "$DEVICE_ID" "$SIM_APP"
+          python3 - "$DEVICE_ID" <<'PY'
+          import os
+          import signal
+          import subprocess
+          import sys
+          import time
+          from pathlib import Path
+
+          device_id = sys.argv[1]
+          bundle_id = "com.maxrave.simpmusic.ios"
+          launch_log = Path("build/simctl-launch.log")
+          system_log = Path("build/simctl-system.log")
+
+          def run_bounded(command, output_path, timeout_seconds):
+              with output_path.open("w", encoding="utf-8") as output:
+                  process = subprocess.Popen(
+                      command,
+                      stdout=output,
+                      stderr=subprocess.STDOUT,
+                      start_new_session=True,
+                  )
+                  try:
+                      process.wait(timeout=timeout_seconds)
+                      status = str(process.returncode)
+                  except subprocess.TimeoutExpired:
+                      status = "timeout"
+                      try:
+                          os.killpg(process.pid, signal.SIGKILL)
+                      except ProcessLookupError:
+                          pass
+                      try:
+                          process.wait(timeout=5)
+                      except subprocess.TimeoutExpired:
+                          pass
+              return status, output_path.read_text(encoding="utf-8", errors="replace")
+
+          # --console is intentional here: Kotlin/Native fatal errors are written to the
+          # application console, not always into unified logging. Keep the process bounded below
+          # so a healthy app still reaches the liveness probe.
+          launch_command = ["xcrun", "simctl", "launch", "--console", device_id, bundle_id]
+          launch_output_file = launch_log.open("w", encoding="utf-8")
+          launch_process = subprocess.Popen(
+              launch_command,
+              stdout=launch_output_file,
+              stderr=subprocess.STDOUT,
+              start_new_session=True,
+          )
+          try:
+              launch_process.wait(timeout=15)
+              launch_status = str(launch_process.returncode)
+          except subprocess.TimeoutExpired:
+              # simctl may keep its client process open while the app itself is
+              # already launched. Keep it alive until the liveness probe completes.
+              launch_status = "still-running"
+          launch_output_file.close()
+          launch_output = launch_log.read_text(encoding="utf-8", errors="replace")
+
+          launch_log.write_text(
+              "command: " + " ".join(launch_command) + "\n"
+              + "status: " + launch_status + "\n"
+              + (launch_output or ""),
+              encoding="utf-8",
+          )
+
+          # Give the app a bounded startup window, then inspect launchd jobs inside
+          # the simulator. Host process checks and `ps` are not available on every
+          # simulator runtime.
+          time.sleep(7)
+          probe_command = [
+              "xcrun", "simctl", "spawn", device_id, "launchctl", "list",
+          ]
+          probe_log = Path("build/simctl-probe.log")
+          probe_status, probe_output = run_bounded(
+              probe_command, probe_log, timeout_seconds=10
+          )
+          app_running = probe_status == "0" and bundle_id in probe_output
+
+          diagnostic_command = [
+              "xcrun", "simctl", "spawn", device_id, "log", "show",
+              "--last", "3m", "--style", "compact", "--predicate",
+              'process == "SimpMusic" OR eventMessage CONTAINS[c] "SimpMusic"',
+          ]
+          diagnostic_log = Path("build/simctl-diagnostic.log")
+          diagnostic_status, diagnostic_output = run_bounded(
+              diagnostic_command, diagnostic_log, timeout_seconds=20
+          )
+
+          if launch_process.poll() is None:
+              try:
+                  os.killpg(launch_process.pid, signal.SIGKILL)
+              except ProcessLookupError:
+                  pass
+              try:
+                  launch_process.wait(timeout=5)
+              except subprocess.TimeoutExpired:
+                  pass
+
+          system_log.write_text(
+              "launch status: " + launch_status + "\n"
+              + "simulator launchctl probe status: " + probe_status + "\n"
+              + "app running after 15 seconds: " + str(app_running).lower() + "\n"
+              + "simulator log show status: " + diagnostic_status + "\n"
+              + probe_output,
+              encoding="utf-8",
+          )
+          with system_log.open("a", encoding="utf-8") as output:
+              output.write(diagnostic_output)
+          print(launch_log.read_text(encoding="utf-8"), end="")
+          print(system_log.read_text(encoding="utf-8"), end="")
+
+          if not app_running:
+              raise SystemExit("Simulator app exited during the startup smoke test")
+          print("Simulator startup smoke test passed.")
+          PY
+
+      - name: Collect iOS crash diagnostics
+        if: always()
+        run: |
+          mkdir -p build/crash-diagnostics
+          report_root="$HOME/Library/Logs/DiagnosticReports"
+          if [[ -d "$report_root" ]]; then
+            find "$report_root" -maxdepth 1 -type f \( -iname 'SimpMusic*' -o -iname '*simpmusic*' \) -print -exec cp {} build/crash-diagnostics/ \;
+          fi
+          simulator_report_root="$HOME/Library/Developer/CoreSimulator/Devices/$DEVICE_ID/data/Library/Logs"
+          if [[ -d "$simulator_report_root" ]]; then
+            find "$simulator_report_root" -type f \( -iname 'SimpMusic*' -o -iname '*simpmusic*' \) -print -exec cp --parents {} build/crash-diagnostics/ \;
+          fi
+          find build/crash-diagnostics -type f -maxdepth 8 -print || true
+
+      - name: Regenerate device Xcode project
+        run: |
+          cp build/project-device.yml iosApp/project.yml
+          cd iosApp
+          xcodegen generate
+
+      - name: Build unsigned app
+        run: |
+          xcodebuild -project iosApp/SimpMusic.xcodeproj -scheme SimpMusic -configuration Debug -sdk iphoneos -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ENABLE_DEBUG_DYLIB=NO build
+
+      - name: Verify packaged app
+        run: |
+          APP=build/ios/Build/Products/Debug-iphoneos/SimpMusic.app
+          test -x "$APP/SimpMusic"
+          test -f "$APP/Assets.car"
+          mkdir -p "$APP/compose-resources"
+          cp -R "$COMPOSE_RESOURCE_ROOT/composeResources" "$APP/compose-resources/"
+          test -f "$APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
+          test ! -e "$APP/SimpMusic.debug.dylib"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' "$APP/Info.plist" >/dev/null
+          if otool -L "$APP/SimpMusic" | grep -q '@rpath/SimpMusic.debug.dylib'; then
+            echo 'ERROR: app executable still depends on Xcode debug dylib and can fail immediately when sideloaded'
+            exit 1
+          fi
+          otool -L "$APP/SimpMusic"
+          echo 'Launch packaging audit passed: no Xcode debug dylib dependency.'
+
+      - name: Package IPA
+        run: |
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R build/ios/Build/Products/Debug-iphoneos/SimpMusic.app build/Payload/
+          cd build
+          zip -qry SimpMusic-unsigned.ipa Payload
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpMusic-iOS-unsigned
+          path: build/SimpMusic-unsigned.ipa
+
+      - name: Upload simulator startup log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpMusic-iOS-simulator-startup-log
+          path: |
+            build/simctl-launch.log
+            build/simctl-system.log
+            build/simctl-diagnostic.log
+            build/simctl-probe.log
+            build/crash-diagnostics
+          if-no-files-found: ignore
+
