@@ -1,0 +1,165 @@
+name: iOS Native Full
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios-native-full:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          if [ -d /Applications/Xcode_16.4.app ]; then
+            sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          fi
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate clean native Xcode project
+        run: |
+          set -euo pipefail
+          cd iosNativeFull
+          xcodegen generate
+          test -f SimpMusicFull.xcodeproj/project.pbxproj
+
+      - name: Build iOS simulator app
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project iosNativeFull/SimpMusicFull.xcodeproj \
+            -scheme SimpMusicFull \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/ios-native-full-simulator \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+          test -x build/ios-native-full-simulator/Build/Products/Release-iphonesimulator/SimpMusic.app/SimpMusic
+
+      - name: Simulator launch and crash smoke test
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import signal
+          import subprocess
+          import sys
+          import time
+          from pathlib import Path
+
+          bundle_id = "com.maxrave.simpmusic.ios.full"
+          app_path = "build/ios-native-full-simulator/Build/Products/Release-iphonesimulator/SimpMusic.app"
+          diagnostics = Path("build/ios-native-full-diagnostics")
+          diagnostics.mkdir(parents=True, exist_ok=True)
+
+          def bounded(command, timeout):
+              process = subprocess.Popen(
+                  command,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+                  text=True,
+                  start_new_session=True,
+              )
+              try:
+                  output, _ = process.communicate(timeout=timeout)
+                  return process.returncode, output or ""
+              except subprocess.TimeoutExpired:
+                  try:
+                      os.killpg(process.pid, signal.SIGKILL)
+                  except ProcessLookupError:
+                      pass
+                  output, _ = process.communicate(timeout=5)
+                  return 124, (output or "") + "\nCOMMAND TIMED OUT\n"
+
+          status, output = bounded(["xcrun", "simctl", "list", "devices", "available", "-j"], 30)
+          if status != 0:
+              raise SystemExit("simctl list failed:\n" + output)
+          devices = json.loads(output)["devices"]
+          device = next(
+              device
+              for runtimes in devices.values()
+              for device in runtimes
+              if device["isAvailable"] and device["name"].startswith("iPhone")
+          )
+          device_id = device["udid"]
+          if device["state"] != "Booted":
+              bounded(["xcrun", "simctl", "boot", device_id], 30)
+              status, output = bounded(["xcrun", "simctl", "bootstatus", device_id, "-b"], 180)
+              if status != 0:
+                  raise SystemExit("simctl bootstatus failed:\n" + output)
+          status, output = bounded(["xcrun", "simctl", "install", device_id, app_path], 180)
+          (diagnostics / "install.log").write_text(output, encoding="utf-8")
+          if status != 0:
+              raise SystemExit("simctl install failed:\n" + output)
+          status, output = bounded(["xcrun", "simctl", "launch", "--console", device_id, bundle_id], 30)
+          (diagnostics / "launch.log").write_text(output, encoding="utf-8")
+          time.sleep(8)
+          status, output = bounded(["xcrun", "simctl", "spawn", device_id, "launchctl", "list"], 30)
+          (diagnostics / "processes.log").write_text(output, encoding="utf-8")
+          if status != 0 or bundle_id not in output:
+              print("The clean native app is not alive after launch.")
+              print(output)
+              sys.exit(1)
+          print("Clean native iOS startup smoke passed.")
+          PY
+
+      - name: Build unsigned device app
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project iosNativeFull/SimpMusicFull.xcodeproj \
+            -scheme SimpMusicFull \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/ios-native-full-device \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+          test -x build/ios-native-full-device/Build/Products/Release-iphoneos/SimpMusic.app/SimpMusic
+
+      - name: Package and verify unsigned IPA
+        run: |
+          set -euo pipefail
+          device_app=build/ios-native-full-device/Build/Products/Release-iphoneos/SimpMusic.app
+          app_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$device_app/Info.plist")
+          app_executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$device_app/Info.plist")
+          test "$app_id" = 'com.maxrave.simpmusic.ios.full'
+          test "$app_executable" = 'SimpMusic'
+          test -f "$device_app/Info.plist"
+          mkdir -p build/ios-native-full-package/Payload
+          cp -R "$device_app" build/ios-native-full-package/Payload/
+          (cd build/ios-native-full-package && zip -qry ../SimpMusic-iOS-native-full-unsigned.ipa Payload)
+          unzip -l build/SimpMusic-iOS-native-full-unsigned.ipa | grep -F 'Payload/SimpMusic.app/Info.plist'
+          unzip -l build/SimpMusic-iOS-native-full-unsigned.ipa | grep -F 'Payload/SimpMusic.app/SimpMusic'
+          shasum -a 256 build/SimpMusic-iOS-native-full-unsigned.ipa | tee build/SimpMusic-iOS-native-full-unsigned.ipa.sha256
+
+      - name: Upload clean native IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpMusic-iOS-native-full
+          path: |
+            build/SimpMusic-iOS-native-full-unsigned.ipa
+            build/SimpMusic-iOS-native-full-unsigned.ipa.sha256
+          if-no-files-found: error
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpMusic-iOS-native-full-diagnostics
+          path: build/ios-native-full-diagnostics
+          if-no-files-found: ignore

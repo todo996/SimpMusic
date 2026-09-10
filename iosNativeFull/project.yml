@@ -1,0 +1,29 @@
+name: SimpMusicFull
+options:
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: com.maxrave.simpmusic.ios.full
+    PRODUCT_NAME: SimpMusic
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    CODE_SIGNING_ALLOWED: NO
+    CODE_SIGNING_REQUIRED: NO
+targets:
+  SimpMusicFull:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: SimpMusicFull
+    settings:
+      base:
+        INFOPLIST_FILE: SimpMusicFull/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+    scheme:
+      gatherCoverageData: false
