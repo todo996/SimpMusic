@@ -326,6 +326,13 @@ jobs:
           print(system_log.read_text(encoding="utf-8"), end="")
 
           if not app_running:
+              # Surface the bounded simulator evidence in the Actions annotations as well as
+              # the downloadable artifact. GitHub's unauthenticated log view otherwise only
+              # exposes the final exit code, which hides whether launchd saw a crash or merely
+              # failed to report the process.
+              for line in system_log.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]:
+                  safe_line = line.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+                  print("::error title=Simulator startup::" + safe_line[:1000])
               raise SystemExit("Simulator app exited during the startup smoke test")
           print("Simulator startup smoke test passed.")
           PY
