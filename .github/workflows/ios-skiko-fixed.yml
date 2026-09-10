@@ -1,0 +1,373 @@
+name: Build iOS - Skiko ABI fixed
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ios-skiko-uri-fix-20260910
+
+jobs:
+  build-ios-fixed:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Select Xcode 16.4 for iOS 18
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
+          xcodebuild -version
+          test "$(xcrun --sdk iphoneos --show-sdk-version)" = "18.5"
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: microsoft
+          cache: gradle
+
+      - name: Cache Kotlin Native toolchains
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: ios-fixed-konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties', 'scripts/ios/*.py') }}
+          restore-keys: |
+            ios-fixed-konan-${{ runner.os }}-
+
+      - name: Prepare KMP sources and pin Compose-Skiko ABI
+        run: |
+          set -euo pipefail
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_override.patch
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_crypto_override.patch
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_avplayer_override.patch
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_rate_override.patch
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_cache_override.patch
+          python3 scripts/ios/prepare_kmp.py
+          python3 scripts/ios/prepare_compose_kmp.py
+
+          cat >> composeApp/build.gradle.kts <<'KOTLIN'
+
+          // IOS_SKIKO_ABI_GUARD_20260910
+          // Compose Multiplatform 1.10.3 must use one Skiko ABI on every iOS configuration.
+          // The previous build crashed in PlatformUriHandler because URIManager was unlinked.
+          configurations.configureEach {
+              resolutionStrategy.eachDependency {
+                  if (requested.group == "org.jetbrains.skiko") {
+                      useVersion("0.9.37.4")
+                      because("Compose Multiplatform 1.10.3 iOS ABI requires matching Skiko; prevents URIManager IrLinkageError")
+                  }
+              }
+          }
+          KOTLIN
+
+          grep -q 'IOS_SKIKO_ABI_GUARD_20260910' composeApp/build.gradle.kts
+          echo 'Pinned every org.jetbrains.skiko dependency to 0.9.37.4.'
+
+      - name: Clean previous Gradle outputs
+        run: ./gradlew clean --no-configuration-cache
+
+      - name: Audit resolved Skiko dependency for iPhone ARM64
+        run: |
+          set -euo pipefail
+          mkdir -p build/ios-fixed-diagnostics
+          ./gradlew :composeApp:dependencyInsight \
+            --configuration iosArm64CompileKlibraries \
+            --dependency org.jetbrains.skiko \
+            --no-configuration-cache \
+            > build/ios-fixed-diagnostics/skiko-dependency-insight.txt
+          cat build/ios-fixed-diagnostics/skiko-dependency-insight.txt
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          text = Path('build/ios-fixed-diagnostics/skiko-dependency-insight.txt').read_text(errors='replace')
+          if 'org.jetbrains.skiko' not in text:
+              raise SystemExit('Skiko was not present in iosArm64CompileKlibraries; cannot prove ABI alignment')
+          if '0.9.37.4' not in text:
+              raise SystemExit('Expected resolved Skiko 0.9.37.4 was not found')
+          bad = []
+          for line in text.splitlines():
+              if 'org.jetbrains.skiko:' not in line:
+                  continue
+              m = re.search(r'org\.jetbrains\.skiko:[^:\s]+:([^\s()]+)', line)
+              if not m:
+                  continue
+              requested = m.group(1)
+              if requested != '0.9.37.4' and '-> 0.9.37.4' not in line:
+                  bad.append(line.strip())
+          if bad:
+              raise SystemExit('Skiko dependency escaped the 0.9.37.4 pin:\n' + '\n'.join(bad))
+          print('Skiko dependency audit passed: iOS ARM64 resolves to 0.9.37.4.')
+          PY
+
+      - name: Compile iOS simulator modules
+        run: |
+          ./gradlew \
+            :common:compileKotlinIosSimulatorArm64 \
+            :domain:compileKotlinIosSimulatorArm64 \
+            :data:compileKotlinIosSimulatorArm64 \
+            --stacktrace --no-configuration-cache --build-cache --parallel
+
+      - name: Link simulator framework
+        run: |
+          ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64 \
+            --stacktrace --no-configuration-cache --build-cache --parallel
+
+      - name: Link iPhone ARM64 framework
+        run: |
+          ./gradlew :composeApp:linkDebugFrameworkIosArm64 \
+            --stacktrace --no-configuration-cache --build-cache --parallel
+
+      - name: Reject known URIManager IrLinkageError in device framework
+        run: |
+          set -euo pipefail
+          FRAMEWORK=composeApp/build/bin/iosArm64/debugFramework/ComposeApp.framework/ComposeApp
+          test -f "$FRAMEWORK"
+          python3 - "$FRAMEWORK" <<'PY'
+          from pathlib import Path
+          import sys
+
+          binary = Path(sys.argv[1]).read_bytes()
+          uri = b'org.jetbrains.skiko/URIManager'
+          linkage = b'unlinked class symbol'
+          pos = binary.find(uri)
+          if pos >= 0:
+              window = binary[max(0, pos - 4096):pos + 4096]
+              if linkage in window:
+                  raise SystemExit('Known fatal ABI stub remains: Skiko URIManager is still an unlinked class symbol')
+          exact = b"Variable uses unlinked class symbol 'org.jetbrains.skiko/URIManager'"
+          if exact in binary:
+              raise SystemExit('Known fatal URIManager IrLinkageError string remains in device framework')
+          print('Device framework ABI scan passed: known URIManager linkage crash stub is absent.')
+          PY
+          if nm -u "$FRAMEWORK" | grep -q '_OBJC_CLASS_\$_UIViewLayoutRegion'; then
+            echo 'ERROR: framework references iOS 26-only UIViewLayoutRegion'
+            exit 1
+          fi
+          echo 'iOS 18 runtime symbol audit passed.'
+
+      - name: Locate Compose iOS resources
+        run: |
+          set -euo pipefail
+          RESOURCE_FILE=$(find "$GITHUB_WORKSPACE/composeApp/build" -type f \
+            -path '*/preparedResources/commonMain/composeResources/values/strings.commonMain.cvr' \
+            -print -quit)
+          if [ -z "$RESOURCE_FILE" ]; then
+            echo 'ERROR: prepared Compose resource strings.commonMain.cvr was not found'
+            exit 1
+          fi
+          SOURCE_RESOURCE_ROOT=$(dirname "$(dirname "$RESOURCE_FILE")")
+          STAGED_RESOURCE_ROOT="$GITHUB_WORKSPACE/build/ios-compose-resources/composeResources/simpmusic.composeapp.generated.resources"
+          mkdir -p "$STAGED_RESOURCE_ROOT"
+          cp -R "$SOURCE_RESOURCE_ROOT/." "$STAGED_RESOURCE_ROOT/"
+          test -f "$STAGED_RESOURCE_ROOT/values/strings.commonMain.cvr"
+          echo "COMPOSE_RESOURCE_ROOT=$GITHUB_WORKSPACE/build/ios-compose-resources" >> "$GITHUB_ENV"
+
+      - name: Generate iOS app icon assets
+        run: |
+          set -euo pipefail
+          SRC=androidApp/src/main/res/mipmap-xxxhdpi/ic_launcher.webp
+          SET=iosApp/Assets.xcassets/AppIcon.appiconset
+          mkdir -p "$SET"
+          make_icon() { sips -s format png -z "$1" "$1" "$SRC" --out "$SET/$2" >/dev/null; }
+          make_icon 40 icon-20@2x.png
+          make_icon 60 icon-20@3x.png
+          make_icon 58 icon-29@2x.png
+          make_icon 87 icon-29@3x.png
+          make_icon 80 icon-40@2x.png
+          make_icon 120 icon-40@3x.png
+          make_icon 120 icon-60@2x.png
+          make_icon 180 icon-60@3x.png
+          make_icon 20 icon-20-ipad.png
+          make_icon 40 icon-20-ipad@2x.png
+          make_icon 29 icon-29-ipad.png
+          make_icon 58 icon-29-ipad@2x.png
+          make_icon 40 icon-40-ipad.png
+          make_icon 80 icon-40-ipad@2x.png
+          make_icon 76 icon-76-ipad.png
+          make_icon 152 icon-76-ipad@2x.png
+          make_icon 167 icon-83.5-ipad@2x.png
+          make_icon 1024 icon-marketing.png
+          cat > "$SET/Contents.json" <<'JSON'
+          {"images":[
+            {"filename":"icon-20@2x.png","idiom":"iphone","scale":"2x","size":"20x20"},
+            {"filename":"icon-20@3x.png","idiom":"iphone","scale":"3x","size":"20x20"},
+            {"filename":"icon-29@2x.png","idiom":"iphone","scale":"2x","size":"29x29"},
+            {"filename":"icon-29@3x.png","idiom":"iphone","scale":"3x","size":"29x29"},
+            {"filename":"icon-40@2x.png","idiom":"iphone","scale":"2x","size":"40x40"},
+            {"filename":"icon-40@3x.png","idiom":"iphone","scale":"3x","size":"40x40"},
+            {"filename":"icon-60@2x.png","idiom":"iphone","scale":"2x","size":"60x60"},
+            {"filename":"icon-60@3x.png","idiom":"iphone","scale":"3x","size":"60x60"},
+            {"filename":"icon-20-ipad.png","idiom":"ipad","scale":"1x","size":"20x20"},
+            {"filename":"icon-20-ipad@2x.png","idiom":"ipad","scale":"2x","size":"20x20"},
+            {"filename":"icon-29-ipad.png","idiom":"ipad","scale":"1x","size":"29x29"},
+            {"filename":"icon-29-ipad@2x.png","idiom":"ipad","scale":"2x","size":"29x29"},
+            {"filename":"icon-40-ipad.png","idiom":"ipad","scale":"1x","size":"40x40"},
+            {"filename":"icon-40-ipad@2x.png","idiom":"ipad","scale":"2x","size":"40x40"},
+            {"filename":"icon-76-ipad.png","idiom":"ipad","scale":"1x","size":"76x76"},
+            {"filename":"icon-76-ipad@2x.png","idiom":"ipad","scale":"2x","size":"76x76"},
+            {"filename":"icon-83.5-ipad@2x.png","idiom":"ipad","scale":"2x","size":"83.5x83.5"},
+            {"filename":"icon-marketing.png","idiom":"ios-marketing","scale":"1x","size":"1024x1024"}
+          ],"info":{"author":"xcode","version":1}}
+          JSON
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate simulator project and smoke test startup
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          cp iosApp/project.yml build/project-device.yml
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('iosApp/project.yml')
+          p.write_text(p.read_text().replace(
+              '../composeApp/build/bin/iosArm64/debugFramework',
+              '../composeApp/build/bin/iosSimulatorArm64/debugFramework'))
+          PY
+          (cd iosApp && xcodegen generate)
+
+          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          for runtime_devices in devices.values():
+              for d in runtime_devices:
+                  if d["isAvailable"] and d["name"].startswith("iPhone"):
+                      print(d["udid"]); raise SystemExit
+          raise SystemExit("No available iPhone simulator")
+          ')
+          xcrun simctl boot "$DEVICE_ID" 2>/dev/null || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b
+
+          xcodebuild \
+            -project iosApp/SimpMusic.xcodeproj \
+            -scheme SimpMusic \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$DEVICE_ID" \
+            -derivedDataPath build/ios-simulator \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            MARKETING_VERSION=2.1.2 CURRENT_PROJECT_VERSION=61 \
+            ENABLE_DEBUG_DYLIB=NO build
+
+          SIM_APP=build/ios-simulator/Build/Products/Debug-iphonesimulator/SimpMusic.app
+          test -x "$SIM_APP/SimpMusic"
+          mkdir -p "$SIM_APP/compose-resources"
+          cp -R "$COMPOSE_RESOURCE_ROOT/composeResources" "$SIM_APP/compose-resources/"
+          xcrun simctl install "$DEVICE_ID" "$SIM_APP"
+          xcrun simctl launch "$DEVICE_ID" com.maxrave.simpmusic.ios | tee build/sim-launch.txt
+          sleep 10
+          xcrun simctl spawn "$DEVICE_ID" launchctl list > build/sim-launchctl.txt
+          if ! grep -q 'com.maxrave.simpmusic.ios' build/sim-launchctl.txt; then
+            xcrun simctl spawn "$DEVICE_ID" log show --last 2m --style compact \
+              --predicate 'process == "SimpMusic" OR eventMessage CONTAINS[c] "SimpMusic"' \
+              > build/sim-system.log || true
+            cat build/sim-system.log || true
+            echo 'ERROR: SimpMusic exited during startup smoke test'
+            exit 1
+          fi
+          xcrun simctl spawn "$DEVICE_ID" log show --last 2m --style compact \
+            --predicate 'process == "SimpMusic" OR eventMessage CONTAINS[c] "SimpMusic"' \
+            > build/sim-system.log || true
+          if grep -Eqi 'IrLinkageError|unlinked class symbol|URIManager.*unlinked|SIGABRT' build/sim-system.log; then
+            cat build/sim-system.log
+            echo 'ERROR: simulator startup log contains a fatal linkage signature'
+            exit 1
+          fi
+          echo 'Simulator cold-start smoke test passed and app remained alive.'
+
+      - name: Restore device project
+        run: |
+          cp build/project-device.yml iosApp/project.yml
+          (cd iosApp && xcodegen generate)
+
+      - name: Build unsigned iPhone app - build 61
+        run: |
+          xcodebuild \
+            -project iosApp/SimpMusic.xcodeproj \
+            -scheme SimpMusic \
+            -configuration Debug \
+            -sdk iphoneos \
+            -derivedDataPath build/ios \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            MARKETING_VERSION=2.1.2 CURRENT_PROJECT_VERSION=61 \
+            ENABLE_DEBUG_DYLIB=NO build
+
+      - name: Verify final iPhone ARM64 app and reject known crash
+        run: |
+          set -euo pipefail
+          APP=build/ios/Build/Products/Debug-iphoneos/SimpMusic.app
+          BIN="$APP/SimpMusic"
+          test -x "$BIN"
+          test -f "$APP/Info.plist"
+          mkdir -p "$APP/compose-resources"
+          cp -R "$COMPOSE_RESOURCE_ROOT/composeResources" "$APP/compose-resources/"
+          test -f "$APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
+
+          SHORT_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
+          BUILD_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
+          test "$SHORT_VERSION" = '2.1.2'
+          test "$BUILD_VERSION" = '61'
+
+          python3 - "$BIN" <<'PY'
+          from pathlib import Path
+          import sys
+          binary = Path(sys.argv[1]).read_bytes()
+          uri = b'org.jetbrains.skiko/URIManager'
+          linkage = b'unlinked class symbol'
+          pos = binary.find(uri)
+          if pos >= 0 and linkage in binary[max(0, pos - 4096):pos + 4096]:
+              raise SystemExit('Final iPhone executable still contains the known URIManager IrLinkageError stub')
+          if b"Variable uses unlinked class symbol 'org.jetbrains.skiko/URIManager'" in binary:
+              raise SystemExit('Final executable contains exact fatal linkage message from build 60')
+          print('Final ARM64 executable scan passed: build-60 URIManager crash signature is absent.')
+          PY
+
+          if otool -L "$BIN" | grep -q '@rpath/SimpMusic.debug.dylib'; then
+            echo 'ERROR: final app depends on Xcode debug dylib'
+            exit 1
+          fi
+          if [[ -e "$APP/SimpMusic.debug.dylib" ]]; then
+            echo 'ERROR: Xcode debug dylib was packaged'
+            exit 1
+          fi
+          file "$BIN"
+          dwarfdump --uuid "$BIN" | tee build/final-macho-uuid.txt
+          echo "Version: $SHORT_VERSION ($BUILD_VERSION)" | tee build/final-version.txt
+          shasum -a 256 "$BIN" | tee build/final-binary-sha256.txt
+          echo 'Final iPhone ARM64 verification passed.'
+
+      - name: Package fixed unsigned IPA
+        run: |
+          set -euo pipefail
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R build/ios/Build/Products/Debug-iphoneos/SimpMusic.app build/Payload/
+          (cd build && zip -qry SimpMusic-2.1.2-build61-iOS18-SkikoFixed-unsigned.ipa Payload)
+          shasum -a 256 build/SimpMusic-2.1.2-build61-iOS18-SkikoFixed-unsigned.ipa | tee build/final-ipa-sha256.txt
+
+      - name: Upload fixed IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpMusic-iOS18-SkikoFixed-build61
+          path: build/SimpMusic-2.1.2-build61-iOS18-SkikoFixed-unsigned.ipa
+
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpMusic-iOS18-SkikoFixed-verification-${{ github.run_number }}
+          path: |
+            build/ios-fixed-diagnostics
+            build/sim-launch.txt
+            build/sim-launchctl.txt
+            build/sim-system.log
+            build/final-macho-uuid.txt
+            build/final-version.txt
+            build/final-binary-sha256.txt
+            build/final-ipa-sha256.txt
+          if-no-files-found: ignore
