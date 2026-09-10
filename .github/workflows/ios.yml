@@ -363,28 +363,63 @@ jobs:
 
       - name: Verify packaged app
         run: |
+          set +e
+          failures=0
+          report_failure() {
+            echo "::error title=Verify packaged app::$1"
+            failures=$((failures + 1))
+          }
+
           APP=build/ios/Build/Products/Debug-iphoneos/SimpMusic.app
-          test -x "$APP/SimpMusic"
-          test -f "$APP/Assets.car"
+          if [[ ! -x "$APP/SimpMusic" ]]; then
+            report_failure "missing or non-executable app binary: $APP/SimpMusic"
+          fi
+          if [[ ! -f "$APP/Assets.car" ]]; then
+            report_failure "missing Assets.car"
+          fi
           mkdir -p "$APP/compose-resources"
-          cp -R "$COMPOSE_RESOURCE_ROOT/composeResources" "$APP/compose-resources/"
-          test -f "$APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
-          test ! -e "$APP/SimpMusic.debug.dylib"
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"
-          PLIST_FRAME_DURATION=$(/usr/libexec/PlistBuddy -c 'Print :CADisableMinimumFrameDurationOnPhone' "$APP/Info.plist")
-          if [[ "${PLIST_FRAME_DURATION,,}" != "true" ]]; then
-            echo "ERROR: CADisableMinimumFrameDurationOnPhone must be true; got '$PLIST_FRAME_DURATION'"
+          if ! cp -R "$COMPOSE_RESOURCE_ROOT/composeResources" "$APP/compose-resources/"; then
+            report_failure "could not copy Compose resources into the app bundle"
+          fi
+          if [[ ! -f "$APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr" ]]; then
+            report_failure "missing generated Compose string resources"
+          fi
+          if [[ -e "$APP/SimpMusic.debug.dylib" ]]; then
+            report_failure "debug dylib was packaged inside the app"
+          fi
+
+          if [[ ! -f "$APP/Info.plist" ]]; then
+            report_failure "missing Info.plist"
+          else
+            SHORT_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist" 2>&1)
+            BUILD_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist" 2>&1)
+            FRAME_DURATION=$(/usr/libexec/PlistBuddy -c 'Print :CADisableMinimumFrameDurationOnPhone' "$APP/Info.plist" 2>&1)
+            echo "Packaged CFBundleShortVersionString=$SHORT_VERSION"
+            echo "Packaged CFBundleVersion=$BUILD_VERSION"
+            echo "Packaged CADisableMinimumFrameDurationOnPhone=$FRAME_DURATION"
+            if [[ "$SHORT_VERSION" != "2.1.2" ]]; then
+              report_failure "wrong CFBundleShortVersionString: expected 2.1.2, got '$SHORT_VERSION'"
+            fi
+            if [[ "$BUILD_VERSION" != "60" ]]; then
+              report_failure "wrong CFBundleVersion: expected 60, got '$BUILD_VERSION'"
+            fi
+            if [[ "${FRAME_DURATION,,}" != "true" ]]; then
+              report_failure "CADisableMinimumFrameDurationOnPhone must be true, got '$FRAME_DURATION'"
+            fi
+            if ! /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' "$APP/Info.plist" >/dev/null 2>&1; then
+              report_failure "Info.plist has no CFBundleIcons"
+            fi
+          fi
+
+          OTOOL_OUTPUT=$(otool -L "$APP/SimpMusic" 2>&1)
+          echo "$OTOOL_OUTPUT"
+          if [[ "$OTOOL_OUTPUT" == *"@rpath/SimpMusic.debug.dylib"* ]]; then
+            report_failure "app executable still depends on Xcode debug dylib"
+          fi
+          if [[ "$failures" -ne 0 ]]; then
+            echo "Verify packaged app failed with $failures condition(s)."
             exit 1
           fi
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")" = '2.1.2'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = '60'
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' "$APP/Info.plist" >/dev/null
-          if otool -L "$APP/SimpMusic" | grep -q '@rpath/SimpMusic.debug.dylib'; then
-            echo 'ERROR: app executable still depends on Xcode debug dylib and can fail immediately when sideloaded'
-            exit 1
-          fi
-          otool -L "$APP/SimpMusic"
           echo 'Launch packaging audit passed: no Xcode debug dylib dependency.'
 
       - name: Package IPA
