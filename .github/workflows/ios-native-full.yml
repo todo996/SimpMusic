@@ -104,14 +104,23 @@ jobs:
           (diagnostics / "install.log").write_text(output, encoding="utf-8")
           if status != 0:
               raise SystemExit("simctl install failed:\n" + output)
-          status, output = bounded(["xcrun", "simctl", "launch", "--console", device_id, bundle_id], 30)
+          # The non-console form returns immediately. Attaching --console keeps the command
+          # open for the lifetime of the app and can make a healthy app look hung to CI.
+          status, output = bounded(["xcrun", "simctl", "launch", device_id, bundle_id], 30)
           (diagnostics / "launch.log").write_text(output, encoding="utf-8")
+          if status != 0:
+              raise SystemExit("simctl launch failed:\n" + output)
           time.sleep(8)
           status, output = bounded(["xcrun", "simctl", "spawn", device_id, "launchctl", "list"], 30)
           (diagnostics / "processes.log").write_text(output, encoding="utf-8")
           if status != 0 or bundle_id not in output:
               print("The clean native app is not alive after launch.")
               print(output)
+              crash_status, crash_output = bounded(
+                  ["xcrun", "simctl", "spawn", device_id, "log", "show", "--last", "2m", "--style", "compact"],
+                  30,
+              )
+              (diagnostics / "system.log").write_text(crash_output, encoding="utf-8")
               sys.exit(1)
           print("Clean native iOS startup smoke passed.")
           PY
