@@ -51,87 +51,84 @@ jobs:
       - name: Simulator startup smoke test
         run: |
           set -euo pipefail
-          DEVICE_ID=$(python3 - <<'PY'
+          python3 - <<'PY'
           import json
-          import subprocess
-
-          try:
-              result = subprocess.run(
-                  ["xcrun", "simctl", "list", "devices", "available", "-j"],
-                  check=True,
-                  capture_output=True,
-                  text=True,
-                  timeout=30,
-              )
-          except subprocess.TimeoutExpired:
-              raise SystemExit("simctl list devices timed out after 30 seconds")
-          devices = json.loads(result.stdout)["devices"]
-          for runtimes in devices.values():
-              for device in runtimes:
-                  if device["isAvailable"] and device["name"].startswith("iPhone"):
-                      print(device["udid"])
-                      raise SystemExit
-          raise SystemExit("No available iPhone simulator found")
-          PY
-          )
-          python3 - "$DEVICE_ID" <<'PY'
-          import json
+          import os
+          import signal
           import subprocess
           import sys
+          import time
+          from pathlib import Path
 
-          device_id = sys.argv[1]
-          try:
-              result = subprocess.run(
-                  ["xcrun", "simctl", "list", "devices", "available", "-j"],
-                  check=True,
-                  capture_output=True,
+          bundle_id = "com.maxrave.simpmusic.native"
+          app_path = "build/ios-native-simulator/Build/Products/Release-iphonesimulator/SimpMusicNative.app"
+
+          def run_bounded(command, timeout):
+              process = subprocess.Popen(
+                  command,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
                   text=True,
-                  timeout=30,
+                  start_new_session=True,
               )
-          except subprocess.TimeoutExpired:
-              raise SystemExit("simctl list devices timed out after 30 seconds")
-          devices = json.loads(result.stdout)["devices"]
-          state = next(
-              device["state"]
-              for devices_for_runtime in devices.values()
-              for device in devices_for_runtime
-              if device["udid"] == device_id
+              try:
+                  output, _ = process.communicate(timeout=timeout)
+                  return process.returncode, output
+              except subprocess.TimeoutExpired:
+                  try:
+                      os.killpg(process.pid, signal.SIGKILL)
+                  except ProcessLookupError:
+                      pass
+                  output, _ = process.communicate(timeout=5)
+                  return 124, (output or "") + "\nCOMMAND TIMED OUT\n"
+
+          list_status, list_output = run_bounded(
+              ["xcrun", "simctl", "list", "devices", "available", "-j"], 30
           )
-          if state != "Booted":
-              try:
-                  subprocess.run(
-                      ["xcrun", "simctl", "boot", device_id],
-                      check=False,
-                      timeout=30,
-                  )
-              except subprocess.TimeoutExpired:
-                  print("simctl boot timed out; continuing to bounded bootstatus")
-              try:
-                  subprocess.run(
-                      ["xcrun", "simctl", "bootstatus", device_id, "-b"],
-                      check=True,
-                      timeout=180,
-                  )
-              except subprocess.TimeoutExpired:
-                  raise SystemExit("simctl bootstatus timed out after 180 seconds")
-          else:
-              print("Simulator was already booted")
+          if list_status != 0:
+              raise SystemExit("simctl list devices failed or timed out:\n" + list_output)
+          devices = json.loads(list_output)["devices"]
+          device = next(
+              device
+              for runtimes in devices.values()
+              for device in runtimes
+              if device["isAvailable"] and device["name"].startswith("iPhone")
+          )
+          device_id = device["udid"]
+          if device["state"] != "Booted":
+              boot_status, boot_output = run_bounded(["xcrun", "simctl", "boot", device_id], 30)
+              if boot_status not in (0, 149):
+                  print("simctl boot returned", boot_status)
+                  print(boot_output)
+              ready_status, ready_output = run_bounded(
+                  ["xcrun", "simctl", "bootstatus", device_id, "-b"], 180
+              )
+              if ready_status != 0:
+                  raise SystemExit("simctl bootstatus failed or timed out:\n" + ready_output)
+
+          install_status, install_output = run_bounded(
+              ["xcrun", "simctl", "install", device_id, app_path], 180
+          )
+          Path("build/ios-native-install.log").write_text(install_output or "", encoding="utf-8")
+          if install_status != 0:
+              raise SystemExit("simctl install failed or timed out:\n" + install_output)
+
+          launch_status, launch_output = run_bounded(
+              ["xcrun", "simctl", "launch", "--console", device_id, bundle_id], 30
+          )
+          Path("build/ios-native-launch.log").write_text(launch_output or "", encoding="utf-8")
+          time.sleep(8)
+          probe_status, probe_output = run_bounded(
+              ["xcrun", "simctl", "spawn", device_id, "launchctl", "list"], 30
+          )
+          Path("build/ios-native-probe.log").write_text(probe_output or "", encoding="utf-8")
+          if probe_status != 0 or bundle_id not in probe_output:
+              print(f"Native iOS app is not alive after launch (simctl status: {launch_status})")
+              print(launch_output)
+              print(probe_output)
+              sys.exit(1)
+          print(f"Native iOS startup smoke passed (simctl status: {launch_status}).")
           PY
-          SIM_APP=build/ios-native-simulator/Build/Products/Release-iphonesimulator/SimpMusicNative.app
-          xcrun simctl install "$DEVICE_ID" "$SIM_APP"
-          set +e
-          xcrun simctl launch --console "$DEVICE_ID" com.maxrave.simpmusic.native > build/ios-native-launch.log 2>&1
-          LAUNCH_STATUS=$?
-          set -e
-          sleep 8
-          xcrun simctl spawn "$DEVICE_ID" launchctl list > build/ios-native-probe.log 2>&1
-          if ! grep -Fq 'com.maxrave.simpmusic.native' build/ios-native-probe.log; then
-            echo "Native iOS app is not alive after launch (simctl status: $LAUNCH_STATUS)"
-            cat build/ios-native-launch.log
-            cat build/ios-native-probe.log
-            exit 1
-          fi
-          echo "Native iOS startup smoke passed (simctl status: $LAUNCH_STATUS)."
 
       - name: Build device app
         run: |
@@ -181,4 +178,5 @@ jobs:
           path: |
             build/ios-native-launch.log
             build/ios-native-probe.log
+            build/ios-native-install.log
           if-no-files-found: ignore
