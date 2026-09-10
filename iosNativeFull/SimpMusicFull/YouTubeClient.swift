@@ -223,9 +223,9 @@ enum MusicError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case let .providerUnavailable(provider): return "Không thể kết nối (provider)."
+        case let .providerUnavailable(provider): return "Không thể kết nối " + provider + "."
         case let .providerMessage(message): return message
-        case let .streamUnavailable(provider): return "Không tìm thấy luồng phát từ (provider)."
+        case let .streamUnavailable(provider): return "Không tìm thấy luồng phát từ " + provider + "."
         case .invalidResponse: return "Dữ liệu nhà cung cấp không hợp lệ."
         }
     }

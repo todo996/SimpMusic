@@ -117,7 +117,7 @@ final class PlayerController: NSObject, ObservableObject {
     private func configureAudioSession() {
         do {
             let audio = AVAudioSession.sharedInstance()
-            try audio.setCategory(.playback, mode: .music, options: [])
+            try audio.setCategory(.playback, mode: .default, options: [])
             try audio.setActive(true)
         } catch {
             errorMessage = "Không thể bật phát nền: \(error.localizedDescription)"

@@ -29,8 +29,8 @@ final class AppModel: ObservableObject {
     private let historyKey = "simpmusic.ios.full.history"
     private let darkModeKey = "simpmusic.ios.full.dark_mode"
 
-    init(player: PlayerController = PlayerController()) {
-        self.player = player
+    init(player: PlayerController? = nil) {
+        self.player = player ?? PlayerController()
         self.darkMode = UserDefaults.standard.object(forKey: darkModeKey) as? Bool ?? true
         loadLocalData()
         streamRequestObserver = NotificationCenter.default.addObserver(
