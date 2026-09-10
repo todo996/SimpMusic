@@ -223,7 +223,10 @@ jobs:
                           pass
               return status, output_path.read_text(encoding="utf-8", errors="replace")
 
-          launch_command = ["xcrun", "simctl", "launch", device_id, bundle_id]
+          # --console is intentional here: Kotlin/Native fatal errors are written to the
+          # application console, not always into unified logging. Keep the process bounded below
+          # so a healthy app still reaches the liveness probe.
+          launch_command = ["xcrun", "simctl", "launch", "--console", device_id, bundle_id]
           launch_output_file = launch_log.open("w", encoding="utf-8")
           launch_process = subprocess.Popen(
               launch_command,
@@ -299,6 +302,20 @@ jobs:
           print("Simulator startup smoke test passed.")
           PY
 
+      - name: Collect iOS crash diagnostics
+        if: always()
+        run: |
+          mkdir -p build/crash-diagnostics
+          report_root="$HOME/Library/Logs/DiagnosticReports"
+          if [[ -d "$report_root" ]]; then
+            find "$report_root" -maxdepth 1 -type f \( -iname 'SimpMusic*' -o -iname '*simpmusic*' \) -print -exec cp {} build/crash-diagnostics/ \;
+          fi
+          simulator_report_root="$HOME/Library/Developer/CoreSimulator/Devices/$DEVICE_ID/data/Library/Logs"
+          if [[ -d "$simulator_report_root" ]]; then
+            find "$simulator_report_root" -type f \( -iname 'SimpMusic*' -o -iname '*simpmusic*' \) -print -exec cp --parents {} build/crash-diagnostics/ \;
+          fi
+          find build/crash-diagnostics -type f -maxdepth 8 -print || true
+
       - name: Regenerate device Xcode project
         run: |
           cp build/project-device.yml iosApp/project.yml
@@ -348,4 +365,7 @@ jobs:
           path: |
             build/simctl-launch.log
             build/simctl-system.log
+            build/simctl-diagnostic.log
+            build/simctl-probe.log
+            build/crash-diagnostics
           if-no-files-found: ignore
