@@ -200,34 +200,33 @@ jobs:
           launch_log = Path("build/simctl-launch.log")
           system_log = Path("build/simctl-system.log")
 
-          def output_text(value):
-              if value is None:
-                  return ""
-              if isinstance(value, bytes):
-                  return value.decode("utf-8", errors="replace")
-              return value
+          def run_bounded(command, output_path, timeout_seconds):
+              with output_path.open("w", encoding="utf-8") as output:
+                  process = subprocess.Popen(
+                      command,
+                      stdout=output,
+                      stderr=subprocess.STDOUT,
+                      start_new_session=True,
+                  )
+                  try:
+                      process.wait(timeout=timeout_seconds)
+                      status = str(process.returncode)
+                  except subprocess.TimeoutExpired:
+                      status = "timeout"
+                      try:
+                          os.killpg(process.pid, signal.SIGKILL)
+                      except ProcessLookupError:
+                          pass
+                      try:
+                          process.wait(timeout=5)
+                      except subprocess.TimeoutExpired:
+                          pass
+              return status, output_path.read_text(encoding="utf-8", errors="replace")
 
           launch_command = ["xcrun", "simctl", "launch", device_id, bundle_id]
-          launch_status = "not-started"
-          launch_output = ""
-          launch_process = subprocess.Popen(
-              launch_command,
-              stdout=subprocess.PIPE,
-              stderr=subprocess.STDOUT,
-              text=True,
-              start_new_session=True,
+          launch_status, launch_output = run_bounded(
+              launch_command, launch_log, timeout_seconds=8
           )
-          try:
-              launch_output, _ = launch_process.communicate(timeout=8)
-              launch_status = str(launch_process.returncode)
-          except subprocess.TimeoutExpired:
-              launch_status = "timeout"
-              try:
-                  os.killpg(launch_process.pid, signal.SIGKILL)
-              except ProcessLookupError:
-                  pass
-              timed_output, _ = launch_process.communicate(timeout=5)
-              launch_output = output_text(launch_output) + output_text(timed_output)
 
           launch_log.write_text(
               "command: " + " ".join(launch_command) + "\n"
@@ -236,37 +235,22 @@ jobs:
               encoding="utf-8",
           )
 
-          # Give the app a bounded startup window, then inspect processes inside the
-          # simulator. A host `ps` check is a false negative, and launchctl's app
-          # domain syntax differs across simulator runtimes.
+          # Give the app a bounded startup window, then inspect launchd jobs inside
+          # the simulator. Host process checks and `ps` are not available on every
+          # simulator runtime.
           time.sleep(7)
           probe_command = [
-              "xcrun", "simctl", "spawn", device_id, "ps", "-A",
-              "-o", "pid=,comm=,args=",
+              "xcrun", "simctl", "spawn", device_id, "launchctl", "list",
           ]
-          try:
-              probe = subprocess.run(
-                  probe_command,
-                  capture_output=True,
-                  text=True,
-                  timeout=10,
-              )
-              probe_output = output_text(probe.stdout) + output_text(probe.stderr)
-              probe_status = str(probe.returncode)
-              app_running = probe.returncode == 0 and any(
-                  bundle_id in line
-                  or "/SimpMusic.app/SimpMusic" in line
-                  or line.rstrip().endswith("SimpMusic")
-                  for line in probe_output.splitlines()
-              )
-          except subprocess.TimeoutExpired as error:
-              app_running = False
-              probe_output = output_text(error.stdout) + output_text(error.stderr)
-              probe_status = "timeout"
+          probe_log = Path("build/simctl-probe.log")
+          probe_status, probe_output = run_bounded(
+              probe_command, probe_log, timeout_seconds=10
+          )
+          app_running = probe_status == "0" and bundle_id in probe_output
 
           system_log.write_text(
               "launch status: " + launch_status + "\n"
-              + "simulator ps probe status: " + probe_status + "\n"
+              + "simulator launchctl probe status: " + probe_status + "\n"
               + "app running after 15 seconds: " + str(app_running).lower() + "\n"
               + probe_output,
               encoding="utf-8",
