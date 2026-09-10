@@ -47,10 +47,36 @@ jobs:
             --stacktrace --no-configuration-cache --no-daemon
 
       - name: Build simulator framework
-        run: ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64 --stacktrace --no-configuration-cache --no-daemon
+        run: |
+          set -o pipefail
+          mkdir -p build/ios-link-diagnostics
+          set +e
+          ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64 --stacktrace --no-configuration-cache --no-daemon 2>&1 | tee build/ios-link-diagnostics/simulator.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            grep -E '(^e: |error:|Unresolved|linkage|Could not)' build/ios-link-diagnostics/simulator.log | head -n 40 | while IFS= read -r line; do
+              safe_line=$(printf '%s' "$line" | sed 's/%/%25/g; s/\r/%0D/g')
+              echo "::error title=Kotlin Native linkage::$safe_line"
+            done
+            exit "$status"
+          fi
 
       - name: Build device framework
-        run: ./gradlew :composeApp:linkDebugFrameworkIosArm64 --stacktrace --no-configuration-cache --no-daemon
+        run: |
+          set -o pipefail
+          mkdir -p build/ios-link-diagnostics
+          set +e
+          ./gradlew :composeApp:linkDebugFrameworkIosArm64 --stacktrace --no-configuration-cache --no-daemon 2>&1 | tee build/ios-link-diagnostics/device.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            grep -E '(^e: |error:|Unresolved|linkage|Could not)' build/ios-link-diagnostics/device.log | head -n 40 | while IFS= read -r line; do
+              safe_line=$(printf '%s' "$line" | sed 's/%/%25/g; s/\r/%0D/g')
+              echo "::error title=Kotlin Native linkage::$safe_line"
+            done
+            exit "$status"
+          fi
 
       - name: Locate Compose iOS resources
         run: |
@@ -379,4 +405,12 @@ jobs:
             build/simctl-diagnostic.log
             build/simctl-probe.log
             build/crash-diagnostics
+          if-no-files-found: ignore
+
+      - name: Upload iOS link diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpMusic-iOS-link-diagnostics-${{ github.run_number }}
+          path: build/ios-link-diagnostics
           if-no-files-found: ignore
