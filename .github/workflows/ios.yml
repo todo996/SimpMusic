@@ -236,12 +236,13 @@ jobs:
               encoding="utf-8",
           )
 
-          # Give the app a bounded startup window, then query its simulator launchd
-          # job. This avoids host `ps` false negatives and never leaves simctl behind.
+          # Give the app a bounded startup window, then inspect processes inside the
+          # simulator. A host `ps` check is a false negative, and launchctl's app
+          # domain syntax differs across simulator runtimes.
           time.sleep(7)
           probe_command = [
-              "xcrun", "simctl", "spawn", device_id, "launchctl", "print",
-              f"gui/501/{bundle_id}",
+              "xcrun", "simctl", "spawn", device_id, "ps", "-A",
+              "-o", "pid=,comm=,args=",
           ]
           try:
               probe = subprocess.run(
@@ -250,9 +251,14 @@ jobs:
                   text=True,
                   timeout=10,
               )
-              app_running = probe.returncode == 0
               probe_output = output_text(probe.stdout) + output_text(probe.stderr)
               probe_status = str(probe.returncode)
+              app_running = probe.returncode == 0 and any(
+                  bundle_id in line
+                  or "/SimpMusic.app/SimpMusic" in line
+                  or line.rstrip().endswith("SimpMusic")
+                  for line in probe_output.splitlines()
+              )
           except subprocess.TimeoutExpired as error:
               app_running = False
               probe_output = output_text(error.stdout) + output_text(error.stderr)
@@ -260,7 +266,7 @@ jobs:
 
           system_log.write_text(
               "launch status: " + launch_status + "\n"
-              + "launchd probe status: " + probe_status + "\n"
+              + "simulator ps probe status: " + probe_status + "\n"
               + "app running after 15 seconds: " + str(app_running).lower() + "\n"
               + probe_output,
               encoding="utf-8",
