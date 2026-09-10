@@ -3,6 +3,7 @@ package com.maxrave.simpmusic.expect.ui
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asComposeImageBitmap
 import androidx.compose.ui.graphics.asSkiaBitmap
+import androidx.compose.ui.graphics.decodeToImageBitmap
 import coil3.Image
 import coil3.toBitmap
 import okio.FileSystem
@@ -32,7 +33,7 @@ actual fun Image.toImageBitmap(): ImageBitmap =
 
 actual fun decodeImageBitmap(bytes: ByteArray): ImageBitmap? =
     runCatching {
-        SkiaImage.makeFromEncoded(bytes).toComposeImageBitmap()
+        bytes.decodeToImageBitmap()
     }.getOrNull()
 
 actual suspend fun persistPickedImage(
