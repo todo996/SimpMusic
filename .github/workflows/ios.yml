@@ -224,9 +224,22 @@ jobs:
               return status, output_path.read_text(encoding="utf-8", errors="replace")
 
           launch_command = ["xcrun", "simctl", "launch", device_id, bundle_id]
-          launch_status, launch_output = run_bounded(
-              launch_command, launch_log, timeout_seconds=8
+          launch_output_file = launch_log.open("w", encoding="utf-8")
+          launch_process = subprocess.Popen(
+              launch_command,
+              stdout=launch_output_file,
+              stderr=subprocess.STDOUT,
+              start_new_session=True,
           )
+          try:
+              launch_process.wait(timeout=15)
+              launch_status = str(launch_process.returncode)
+          except subprocess.TimeoutExpired:
+              # simctl may keep its client process open while the app itself is
+              # already launched. Keep it alive until the liveness probe completes.
+              launch_status = "still-running"
+          launch_output_file.close()
+          launch_output = launch_log.read_text(encoding="utf-8", errors="replace")
 
           launch_log.write_text(
               "command: " + " ".join(launch_command) + "\n"
@@ -257,6 +270,16 @@ jobs:
           diagnostic_status, diagnostic_output = run_bounded(
               diagnostic_command, diagnostic_log, timeout_seconds=20
           )
+
+          if launch_process.poll() is None:
+              try:
+                  os.killpg(launch_process.pid, signal.SIGKILL)
+              except ProcessLookupError:
+                  pass
+              try:
+                  launch_process.wait(timeout=5)
+              except subprocess.TimeoutExpired:
+                  pass
 
           system_log.write_text(
               "launch status: " + launch_status + "\n"
