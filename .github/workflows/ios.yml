@@ -190,14 +190,15 @@ jobs:
           set +e
           xcrun simctl launch "$DEVICE_ID" com.maxrave.simpmusic.ios > build/simctl-launch.log 2>&1 &
           LAUNCH_PID=$!
+          disown "$LAUNCH_PID" 2>/dev/null || true
           sleep 15
-          if xcrun simctl spawn "$DEVICE_ID" ps -A | grep -q '[S]impMusic'; then
+          if ps -A -o comm= | grep -Eq '(^|/)SimpMusic$'; then
               APP_RUNNING=1
           else
               APP_RUNNING=0
           fi
           # Do not wait on simctl: on some macOS runners it keeps a child process after launch.
-          # The process liveness check above is the smoke-test assertion we need.
+          # The host process liveness check above is the smoke-test assertion we need.
           kill -KILL "$LAUNCH_PID" 2>/dev/null || true
           LAUNCH_STATUS=0
           set -e
