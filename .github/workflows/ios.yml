@@ -188,7 +188,16 @@ jobs:
           test -f "$SIM_APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
           xcrun simctl install "$DEVICE_ID" "$SIM_APP"
           set +e
-          xcrun simctl launch "$DEVICE_ID" com.maxrave.simpmusic.ios > build/simctl-launch.log 2>&1 &
+          python3 - "$DEVICE_ID" > build/simctl-launch.log 2>&1 <<'PY' &
+          import subprocess
+          import sys
+
+          process = subprocess.Popen(
+              ["xcrun", "simctl", "launch", sys.argv[1], "com.maxrave.simpmusic.ios"],
+              start_new_session=True,
+          )
+          print(process.pid, flush=True)
+          PY
           LAUNCH_PID=$!
           disown "$LAUNCH_PID" 2>/dev/null || true
           sleep 15
@@ -199,6 +208,11 @@ jobs:
           fi
           # Do not wait on simctl: on some macOS runners it keeps a child process after launch.
           # The host process liveness check above is the smoke-test assertion we need.
+          SIMCTL_PID=$(head -n 1 build/simctl-launch.log || true)
+          if [ -n "$SIMCTL_PID" ]; then
+              kill -KILL -- -"$SIMCTL_PID" 2>/dev/null || true
+              kill -KILL "$SIMCTL_PID" 2>/dev/null || true
+          fi
           kill -KILL "$LAUNCH_PID" 2>/dev/null || true
           LAUNCH_STATUS=0
           set -e
