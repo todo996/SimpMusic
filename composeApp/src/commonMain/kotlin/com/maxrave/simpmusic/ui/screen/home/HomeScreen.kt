@@ -167,7 +167,6 @@ import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.koinInject
-import org.koin.compose.viewmodel.koinViewModel
 import simpmusic.composeapp.generated.resources.Res
 import simpmusic.composeapp.generated.resources.all
 import simpmusic.composeapp.generated.resources.app_name
@@ -222,7 +221,7 @@ private val listOfHomeChip =
 fun HomeScreen(
     onScrolling: (onTop: Boolean) -> Unit = {},
     viewModel: HomeViewModel =
-        koinViewModel(),
+        koinInject(),
     sharedViewModel: SharedViewModel =
         koinInject(),
     navController: NavController,
@@ -1000,7 +999,7 @@ fun AccountLayout(
 fun QuickPicks(
     homeItem: HomeItem,
     navController: NavController,
-    viewModel: HomeViewModel = koinViewModel(),
+    viewModel: HomeViewModel = koinInject(),
 ) {
     val lazyListState = rememberLazyGridState()
     val snapperFlingBehavior = rememberSnapFlingBehavior(SnapLayoutInfoProvider(lazyGridState = lazyListState, snapPosition = SnapPosition.Start))

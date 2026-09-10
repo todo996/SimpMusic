@@ -94,7 +94,7 @@ import com.maxrave.simpmusic.ui.theme.typo
 import com.maxrave.simpmusic.viewModel.HomeViewModel
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
-import org.koin.compose.viewmodel.koinViewModel
+import org.koin.compose.koinInject
 import simpmusic.composeapp.generated.resources.Res
 import simpmusic.composeapp.generated.resources.album
 import simpmusic.composeapp.generated.resources.app_name
@@ -106,7 +106,7 @@ import simpmusic.composeapp.generated.resources.you
 
 @Composable
 fun HomeItem(
-    homeViewModel: HomeViewModel = koinViewModel(),
+    homeViewModel: HomeViewModel = koinInject(),
     navController: NavController,
     data: HomeItem,
 ) {
@@ -1299,7 +1299,7 @@ fun ItemTrackChart(
 fun MoodAndGenresContentItem(
     data: Any?,
     navController: NavController,
-    homeViewModel: HomeViewModel = koinViewModel(),
+    homeViewModel: HomeViewModel = koinInject(),
 ) {
     Column(
         modifier = Modifier.wrapContentHeight(align = Alignment.CenterVertically, unbounded = true),
