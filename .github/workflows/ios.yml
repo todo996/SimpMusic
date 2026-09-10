@@ -2,6 +2,12 @@ name: Build iOS
 
 on:
   workflow_dispatch:
+    inputs:
+      fast_check:
+        description: 'Chỉ build simulator và smoke test, bỏ qua framework/device IPA'
+        required: false
+        default: false
+        type: boolean
   push:
     branches: [ios-port, 'codex/**']
 
@@ -28,6 +34,14 @@ jobs:
           distribution: microsoft
           cache: gradle
 
+      - name: Cache Kotlin Native toolchains
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: ios-konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties', 'scripts/ios/*.py') }}
+          restore-keys: |
+            ios-konan-${{ runner.os }}-
+
       - name: Audit and prepare iOS KMP sources
         run: |
           git -C core apply --whitespace=nowarn ../scripts/ios/core_override.patch
@@ -44,14 +58,14 @@ jobs:
             :common:compileKotlinIosSimulatorArm64 \
             :domain:compileKotlinIosSimulatorArm64 \
             :data:compileKotlinIosSimulatorArm64 \
-            --stacktrace --no-configuration-cache --no-daemon
+            --stacktrace --no-configuration-cache --build-cache --parallel
 
       - name: Build simulator framework
         run: |
           set -o pipefail
           mkdir -p build/ios-link-diagnostics
           set +e
-          ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64 --stacktrace --no-configuration-cache --no-daemon 2>&1 | tee build/ios-link-diagnostics/simulator.log
+          ./gradlew :composeApp:linkDebugFrameworkIosSimulatorArm64 --stacktrace --no-configuration-cache --build-cache --parallel 2>&1 | tee build/ios-link-diagnostics/simulator.log
           status=${PIPESTATUS[0]}
           set -e
           if [ "$status" -ne 0 ]; then
@@ -63,11 +77,12 @@ jobs:
           fi
 
       - name: Build device framework
+        if: ${{ !inputs.fast_check }}
         run: |
           set -o pipefail
           mkdir -p build/ios-link-diagnostics
           set +e
-          ./gradlew :composeApp:linkDebugFrameworkIosArm64 --stacktrace --no-configuration-cache --no-daemon 2>&1 | tee build/ios-link-diagnostics/device.log
+          ./gradlew :composeApp:linkDebugFrameworkIosArm64 --stacktrace --no-configuration-cache --build-cache --parallel 2>&1 | tee build/ios-link-diagnostics/device.log
           status=${PIPESTATUS[0]}
           set -e
           if [ "$status" -ne 0 ]; then
@@ -97,7 +112,11 @@ jobs:
 
       - name: Reject iOS 26-only runtime symbols
         run: |
-          FRAMEWORK=composeApp/build/bin/iosArm64/debugFramework/ComposeApp.framework/ComposeApp
+          if [[ "${{ inputs.fast_check }}" == "true" ]]; then
+            FRAMEWORK=composeApp/build/bin/iosSimulatorArm64/debugFramework/ComposeApp.framework/ComposeApp
+          else
+            FRAMEWORK=composeApp/build/bin/iosArm64/debugFramework/ComposeApp.framework/ComposeApp
+          fi
           if nm -u "$FRAMEWORK" | grep -q '_OBJC_CLASS_\$_UIViewLayoutRegion'; then
             echo 'ERROR: framework still references iOS 26-only UIViewLayoutRegion'
             exit 1
@@ -352,16 +371,19 @@ jobs:
           find build/crash-diagnostics -type f -maxdepth 8 -print || true
 
       - name: Regenerate device Xcode project
+        if: ${{ !inputs.fast_check }}
         run: |
           cp build/project-device.yml iosApp/project.yml
           cd iosApp
           xcodegen generate
 
       - name: Build unsigned app
+        if: ${{ !inputs.fast_check }}
         run: |
           xcodebuild -project iosApp/SimpMusic.xcodeproj -scheme SimpMusic -configuration Debug -sdk iphoneos -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO MARKETING_VERSION=2.1.2 CURRENT_PROJECT_VERSION=60 ENABLE_DEBUG_DYLIB=NO build
 
       - name: Verify packaged app
+        if: ${{ !inputs.fast_check }}
         run: |
           set +e
           failures=0
@@ -423,6 +445,7 @@ jobs:
           echo 'Launch packaging audit passed: no Xcode debug dylib dependency.'
 
       - name: Package IPA
+        if: ${{ !inputs.fast_check }}
         run: |
           rm -rf build/Payload
           mkdir -p build/Payload
@@ -431,6 +454,7 @@ jobs:
           zip -qry SimpMusic-unsigned.ipa Payload
 
       - name: Upload unsigned IPA
+        if: ${{ !inputs.fast_check }}
         uses: actions/upload-artifact@v4
         with:
           name: SimpMusic-iOS-unsigned
