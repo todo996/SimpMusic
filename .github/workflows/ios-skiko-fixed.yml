@@ -51,25 +51,27 @@ jobs:
           cat >> composeApp/build.gradle.kts <<'KOTLIN'
 
           // IOS_SKIKO_ABI_GUARD_20260910
-          // Compose Multiplatform 1.10.3 must use one Skiko ABI on every iOS configuration.
-          // The previous build crashed in PlatformUriHandler because URIManager was unlinked.
+          // Keep all iOS Compose artifacts on one ABI generation.
           configurations.configureEach {
               resolutionStrategy.eachDependency {
-                  if (requested.group == "org.jetbrains.skiko") {
-                      useVersion("0.9.37.4")
-                      because("Compose Multiplatform 1.10.3 iOS ABI requires matching Skiko; prevents URIManager IrLinkageError")
+                  when (requested.group) {
+                      "org.jetbrains.skiko" -> {
+                          useVersion("0.9.37.4")
+                          because("Compose Multiplatform 1.10.3 iOS ABI requires matching Skiko; prevents URIManager IrLinkageError")
+                      }
+                      "org.jetbrains.compose.components" -> {
+                          useVersion("1.10.3")
+                          because("Compose resources must use the same 1.10.3 ABI generation as Compose UI on iOS")
+                      }
                   }
               }
           }
           KOTLIN
 
           grep -q 'IOS_SKIKO_ABI_GUARD_20260910' composeApp/build.gradle.kts
-          echo 'Pinned every org.jetbrains.skiko dependency to 0.9.37.4.'
+          echo 'Pinned Skiko to 0.9.37.4 and Compose Components to 1.10.3.'
 
-      - name: Clean previous Gradle outputs
-        run: ./gradlew clean --no-configuration-cache
-
-      - name: Audit resolved Skiko dependency for iPhone ARM64
+      - name: Audit resolved iPhone ARM64 Compose ABI
         run: |
           set -euo pipefail
           mkdir -p build/ios-fixed-diagnostics
@@ -78,29 +80,51 @@ jobs:
             --dependency org.jetbrains.skiko \
             --no-configuration-cache \
             > build/ios-fixed-diagnostics/skiko-dependency-insight.txt
+          ./gradlew :composeApp:dependencyInsight \
+            --configuration iosArm64CompileKlibraries \
+            --dependency org.jetbrains.compose.components \
+            --no-configuration-cache \
+            > build/ios-fixed-diagnostics/compose-components-dependency-insight.txt
           cat build/ios-fixed-diagnostics/skiko-dependency-insight.txt
+          cat build/ios-fixed-diagnostics/compose-components-dependency-insight.txt
           python3 - <<'PY'
           from pathlib import Path
           import re
 
-          text = Path('build/ios-fixed-diagnostics/skiko-dependency-insight.txt').read_text(errors='replace')
-          if 'org.jetbrains.skiko' not in text:
-              raise SystemExit('Skiko was not present in iosArm64CompileKlibraries; cannot prove ABI alignment')
-          if '0.9.37.4' not in text:
-              raise SystemExit('Expected resolved Skiko 0.9.37.4 was not found')
+          skiko = Path('build/ios-fixed-diagnostics/skiko-dependency-insight.txt').read_text(errors='replace')
+          components = Path('build/ios-fixed-diagnostics/compose-components-dependency-insight.txt').read_text(errors='replace')
+
+          selected = [line.strip() for line in skiko.splitlines() if line.startswith('org.jetbrains.skiko:')]
+          if not selected:
+              raise SystemExit('No selected Skiko coordinates found in iOS ARM64 dependency graph')
           bad = []
-          for line in text.splitlines():
-              if 'org.jetbrains.skiko:' not in line:
-                  continue
-              m = re.search(r'org\.jetbrains\.skiko:[^:\s]+:([^\s()]+)', line)
-              if not m:
-                  continue
-              requested = m.group(1)
-              if requested != '0.9.37.4' and '-> 0.9.37.4' not in line:
-                  bad.append(line.strip())
+          for line in selected:
+              if ' -> ' in line:
+                  resolved = line.rsplit(' -> ', 1)[1].strip()
+              else:
+                  m = re.match(r'org\.jetbrains\.skiko:[^:]+:([^\s]+)', line)
+                  resolved = m.group(1) if m else ''
+              if resolved != '0.9.37.4':
+                  bad.append(line)
           if bad:
-              raise SystemExit('Skiko dependency escaped the 0.9.37.4 pin:\n' + '\n'.join(bad))
-          print('Skiko dependency audit passed: iOS ARM64 resolves to 0.9.37.4.')
+              raise SystemExit('Resolved Skiko is not uniformly 0.9.37.4:\n' + '\n'.join(bad))
+
+          component_selected = [line.strip() for line in components.splitlines() if line.startswith('org.jetbrains.compose.components:')]
+          if not component_selected:
+              raise SystemExit('No selected Compose Components coordinates found')
+          component_bad = []
+          for line in component_selected:
+              if ' -> ' in line:
+                  resolved = line.rsplit(' -> ', 1)[1].strip()
+              else:
+                  m = re.match(r'org\.jetbrains\.compose\.components:[^:]+:([^\s]+)', line)
+                  resolved = m.group(1) if m else ''
+              if resolved != '1.10.3':
+                  component_bad.append(line)
+          if component_bad:
+              raise SystemExit('Resolved Compose Components is not uniformly 1.10.3:\n' + '\n'.join(component_bad))
+
+          print('Dependency ABI audit passed: Skiko=0.9.37.4, Compose Components=1.10.3.')
           PY
 
       - name: Compile iOS simulator modules
