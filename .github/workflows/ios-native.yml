@@ -51,26 +51,46 @@ jobs:
       - name: Simulator startup smoke test
         run: |
           set -euo pipefail
-          DEVICE_ID=$(xcrun simctl list devices available -j | python3 -c '
+          DEVICE_ID=$(python3 - <<'PY'
           import json
-          import sys
-          devices = json.load(sys.stdin)["devices"]
+          import subprocess
+
+          try:
+              result = subprocess.run(
+                  ["xcrun", "simctl", "list", "devices", "available", "-j"],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+                  timeout=30,
+              )
+          except subprocess.TimeoutExpired:
+              raise SystemExit("simctl list devices timed out after 30 seconds")
+          devices = json.loads(result.stdout)["devices"]
           for runtimes in devices.values():
               for device in runtimes:
                   if device["isAvailable"] and device["name"].startswith("iPhone"):
                       print(device["udid"])
                       raise SystemExit
           raise SystemExit("No available iPhone simulator found")
-          ')
+          PY
+          )
           python3 - "$DEVICE_ID" <<'PY'
           import json
           import subprocess
           import sys
 
           device_id = sys.argv[1]
-          devices = json.loads(subprocess.check_output([
-              "xcrun", "simctl", "list", "devices", "available", "-j"
-          ]))["devices"]
+          try:
+              result = subprocess.run(
+                  ["xcrun", "simctl", "list", "devices", "available", "-j"],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+                  timeout=30,
+              )
+          except subprocess.TimeoutExpired:
+              raise SystemExit("simctl list devices timed out after 30 seconds")
+          devices = json.loads(result.stdout)["devices"]
           state = next(
               device["state"]
               for devices_for_runtime in devices.values()
