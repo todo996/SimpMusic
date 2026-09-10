@@ -248,13 +248,26 @@ jobs:
           )
           app_running = probe_status == "0" and bundle_id in probe_output
 
+          diagnostic_command = [
+              "xcrun", "simctl", "spawn", device_id, "log", "show",
+              "--last", "3m", "--style", "compact", "--predicate",
+              'process == "SimpMusic" OR eventMessage CONTAINS[c] "SimpMusic"',
+          ]
+          diagnostic_log = Path("build/simctl-diagnostic.log")
+          diagnostic_status, diagnostic_output = run_bounded(
+              diagnostic_command, diagnostic_log, timeout_seconds=20
+          )
+
           system_log.write_text(
               "launch status: " + launch_status + "\n"
               + "simulator launchctl probe status: " + probe_status + "\n"
               + "app running after 15 seconds: " + str(app_running).lower() + "\n"
+              + "simulator log show status: " + diagnostic_status + "\n"
               + probe_output,
               encoding="utf-8",
           )
+          with system_log.open("a", encoding="utf-8") as output:
+              output.write(diagnostic_output)
           print(launch_log.read_text(encoding="utf-8"), end="")
           print(system_log.read_text(encoding="utf-8"), end="")
 
