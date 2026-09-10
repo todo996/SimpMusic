@@ -53,16 +53,7 @@ fun MainViewController() = run {
     } else {
         println("SimpMusic iOS startup: Koin ready")
         val readyViewModel = requireNotNull(rootViewModel)
-        ComposeUIViewController {
-            // Keep a Native linkage failure visible on-device instead of letting an exception
-            // escape the first composition and terminate the process with SIGABRT.
-            try {
-                App(viewModel = readyViewModel)
-            } catch (failure: Throwable) {
-                println("SimpMusic iOS Compose startup failed: ${failure.stackTraceToString()}")
-                StartupFailureScreen(failure.message ?: "Compose initialization error")
-            }
-        }
+        ComposeUIViewController { App(viewModel = readyViewModel) }
     }
 }
 

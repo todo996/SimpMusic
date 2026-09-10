@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[2]
 build = ROOT / "composeApp" / "build.gradle.kts"
 s = build.read_text()
 old = """//    listOf(\n//        iosArm64(),\n//        iosSimulatorArm64()\n//    ).forEach { iosTarget ->\n//        iosTarget.binaries.framework {\n//            baseName = \"ComposeApp\"\n//            isStatic = true\n//        }\n//    }"""
-new = """    listOf(\n        iosArm64(),\n        iosSimulatorArm64()\n    ).forEach { iosTarget ->\n        iosTarget.compilerOptions {\n            // Reject unresolved Kotlin/Native IR symbols at build time instead of crashing\n            // inside Compose setContent on the first iOS frame.\n            freeCompilerArgs.add(\"-Xpartial-linkage=disable\")\n        }\n        iosTarget.binaries.framework {\n            baseName = \"ComposeApp\"\n            isStatic = true\n        }\n    }"""
+new = """    listOf(\n        iosArm64(),\n        iosSimulatorArm64()\n    ).forEach { iosTarget ->\n        iosTarget.binaries.framework {\n            baseName = \"ComposeApp\"\n            isStatic = true\n        }\n    }"""
 if old in s:
     s = s.replace(old, new)
 elif "iosArm64()" in s and "iosSimulatorArm64()" in s:
