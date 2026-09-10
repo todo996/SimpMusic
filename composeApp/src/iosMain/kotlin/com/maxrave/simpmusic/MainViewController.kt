@@ -29,13 +29,16 @@ import platform.UIKit.UIDevice
 
 fun MainViewController() = run {
     println("SimpMusic iOS startup: initializing Koin")
+    var rootViewModel: SharedViewModel? = null
     val startupFailure =
         runCatching {
             initializeIosApp()
             // Resolve the root graph before Compose starts. This keeps missing iOS bindings visible
             // with a concrete dependency path instead of an opaque composition failure.
             preflightIosGraph()
-            getKoin().get<SharedViewModel>()
+            // Resolve this outside Compose as well. Calling koinInject() from the first iOS
+            // composition used to cross the Koin-Compose ABI boundary before any UI was drawn.
+            rootViewModel = getKoin().get()
         }.exceptionOrNull()
 
     if (startupFailure != null) {
@@ -49,7 +52,17 @@ fun MainViewController() = run {
         }
     } else {
         println("SimpMusic iOS startup: Koin ready")
-        ComposeUIViewController { App() }
+        val readyViewModel = requireNotNull(rootViewModel)
+        ComposeUIViewController {
+            // Keep a Native linkage failure visible on-device instead of letting an exception
+            // escape the first composition and terminate the process with SIGABRT.
+            try {
+                App(viewModel = readyViewModel)
+            } catch (failure: Throwable) {
+                println("SimpMusic iOS Compose startup failed: ${failure.stackTraceToString()}")
+                StartupFailureScreen(failure.message ?: "Compose initialization error")
+            }
+        }
     }
 }
 

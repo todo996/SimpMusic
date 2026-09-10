@@ -35,6 +35,8 @@ targets:
         embed: false
     settings:
       base:
+        MARKETING_VERSION: '2.1.2'
+        CURRENT_PROJECT_VERSION: '60'
         PRODUCT_BUNDLE_IDENTIFIER: com.maxrave.simpmusic.ios
         CODE_SIGN_STYLE: Automatic
         TARGETED_DEVICE_FAMILY: '1,2'

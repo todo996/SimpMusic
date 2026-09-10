@@ -178,6 +178,8 @@ jobs:
             -derivedDataPath build/ios-simulator \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
+            MARKETING_VERSION=2.1.2 \
+            CURRENT_PROJECT_VERSION=60 \
             ENABLE_DEBUG_DYLIB=NO \
             build
 
@@ -324,7 +326,7 @@ jobs:
 
       - name: Build unsigned app
         run: |
-          xcodebuild -project iosApp/SimpMusic.xcodeproj -scheme SimpMusic -configuration Debug -sdk iphoneos -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ENABLE_DEBUG_DYLIB=NO build
+          xcodebuild -project iosApp/SimpMusic.xcodeproj -scheme SimpMusic -configuration Debug -sdk iphoneos -derivedDataPath build/ios CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO MARKETING_VERSION=2.1.2 CURRENT_PROJECT_VERSION=60 ENABLE_DEBUG_DYLIB=NO build
 
       - name: Verify packaged app
         run: |
@@ -335,13 +337,15 @@ jobs:
           cp -R "$COMPOSE_RESOURCE_ROOT/composeResources" "$APP/compose-resources/"
           test -f "$APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
           test ! -e "$APP/SimpMusic.debug.dylib"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"
           PLIST_FRAME_DURATION=$(/usr/libexec/PlistBuddy -c 'Print :CADisableMinimumFrameDurationOnPhone' "$APP/Info.plist")
           if [[ "${PLIST_FRAME_DURATION,,}" != "true" ]]; then
             echo "ERROR: CADisableMinimumFrameDurationOnPhone must be true; got '$PLIST_FRAME_DURATION'"
             exit 1
           fi
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")" = '2.1.1'
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = '59'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")" = '2.1.2'
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = '60'
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIcons' "$APP/Info.plist" >/dev/null
           if otool -L "$APP/SimpMusic" | grep -q '@rpath/SimpMusic.debug.dylib'; then
             echo 'ERROR: app executable still depends on Xcode debug dylib and can fail immediately when sideloaded'
