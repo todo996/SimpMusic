@@ -38,6 +38,12 @@ struct LyricsResult: Equatable {
     let synced: Bool
 }
 
+struct LocalPlaylist: Identifiable, Codable, Equatable {
+    let id: UUID
+    var name: String
+    var tracks: [MusicTrack]
+}
+
 enum AppTab: Hashable {
     case home, search, library, settings
 }

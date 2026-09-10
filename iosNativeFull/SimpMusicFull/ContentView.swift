@@ -216,6 +216,7 @@ private struct LibraryView: View {
     @EnvironmentObject private var model: AppModel
     @Binding var showPlayer: Bool
     @State private var filter: LibraryFilter = .favorites
+    @State private var showNewPlaylist = false
 
     private var rows: [MusicTrack] {
         switch filter {
@@ -233,7 +234,29 @@ private struct LibraryView: View {
                 }
                 .pickerStyle(.segmented)
                 .padding()
-                if rows.isEmpty {
+                if filter == .playlists {
+                    if model.playlists.isEmpty {
+                        EmptyState(icon: "rectangle.stack.badge.plus", title: "Chưa có playlist", message: "Tạo playlist để lưu các bài hát yêu thích.")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    } else {
+                        List(model.playlists) { playlist in
+                            NavigationLink {
+                                PlaylistDetail(playlist: playlist, showPlayer: $showPlayer)
+                            } label: {
+                                Label {
+                                    VStack(alignment: .leading) {
+                                        Text(playlist.name).font(.headline)
+                                        Text("\(playlist.tracks.count) bài hát").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                } icon: {
+                                    Image(systemName: "music.note.list")
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                            }
+                        }
+                        .listStyle(.plain)
+                    }
+                } else if rows.isEmpty {
                     EmptyState(
                         icon: filter == .favorites ? "heart" : "clock",
                         title: filter == .favorites ? "Chưa có bài yêu thích" : "Chưa có lịch sử nghe",
@@ -258,10 +281,72 @@ private struct LibraryView: View {
             }
             .navigationTitle("Thư viện")
             .toolbar {
+                if filter == .playlists {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { showNewPlaylist = true } label: { Image(systemName: "plus") }
+                    }
+                }
                 if filter == .history && !model.history.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Xóa lịch sử", role: .destructive) { model.clearHistory() }
                     }
+                }
+            }
+            .sheet(isPresented: $showNewPlaylist) {
+                NewPlaylistSheet { name in
+                    model.createPlaylist(named: name)
+                    showNewPlaylist = false
+                }
+                .presentationDetents([.height(220)])
+            }
+        }
+    }
+}
+
+private struct PlaylistDetail: View {
+    @EnvironmentObject private var model: AppModel
+    let playlist: LocalPlaylist
+    @Binding var showPlayer: Bool
+
+    var body: some View {
+        Group {
+            if playlist.tracks.isEmpty {
+                EmptyState(icon: "music.note", title: "Playlist trống", message: "Thêm bài hát từ kết quả tìm kiếm bằng menu ngữ cảnh.")
+            } else {
+                List(playlist.tracks) { track in
+                    TrackRow(track: track, isResolving: model.isResolvingTrackID == track.id) {
+                        model.player.setQueue(playlist.tracks)
+                        Task { @MainActor in await model.play(track) }
+                    }
+                    .swipeActions {
+                        Button(role: .destructive) { model.remove(track, from: playlist.id) } label: {
+                            Label("Xóa", systemImage: "trash")
+                        }
+                    }
+                }
+                .listStyle(.plain)
+            }
+        }
+        .navigationTitle(playlist.name)
+    }
+}
+
+private struct NewPlaylistSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    let onCreate: (String) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("Tên playlist", text: $name)
+            }
+            .navigationTitle("Playlist mới")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Hủy") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Tạo") { onCreate(name); dismiss() }
+                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
@@ -460,6 +545,13 @@ private struct TrackRow: View {
         .contextMenu {
             Button { model.toggleFavorite(track) } label: {
                 Label(model.isFavorite(track) ? "Bỏ yêu thích" : "Thêm yêu thích", systemImage: "heart")
+            }
+            if !model.playlists.isEmpty {
+                Menu("Thêm vào playlist", systemImage: "text.badge.plus") {
+                    ForEach(model.playlists) { playlist in
+                        Button(playlist.name) { model.add(track, to: playlist.id) }
+                    }
+                }
             }
             if let url = track.permalinkURL {
                 ShareLink(item: url) { Label("Chia sẻ", systemImage: "square.and.arrow.up") }

@@ -10,6 +10,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var tracks: [MusicTrack] = []
     @Published private(set) var favorites: [MusicTrack] = []
     @Published private(set) var history: [MusicTrack] = []
+    @Published private(set) var playlists: [LocalPlaylist] = []
     @Published private(set) var isSearching = false
     @Published private(set) var isLoadingHome = false
     @Published private(set) var isResolvingTrackID: String?
@@ -27,6 +28,7 @@ final class AppModel: ObservableObject {
 
     private let favoritesKey = "simpmusic.ios.full.favorites"
     private let historyKey = "simpmusic.ios.full.history"
+    private let playlistsKey = "simpmusic.ios.full.playlists"
     private let darkModeKey = "simpmusic.ios.full.dark_mode"
 
     init(player: PlayerController? = nil) {
@@ -154,6 +156,26 @@ final class AppModel: ObservableObject {
         save(history, key: historyKey)
     }
 
+    func createPlaylist(named name: String) {
+        let value = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty, !playlists.contains(where: { $0.name.caseInsensitiveCompare(value) == .orderedSame }) else { return }
+        playlists.append(LocalPlaylist(id: UUID(), name: value, tracks: []))
+        save(playlists, key: playlistsKey)
+    }
+
+    func add(_ track: MusicTrack, to playlistID: UUID) {
+        guard let index = playlists.firstIndex(where: { $0.id == playlistID }),
+              !playlists[index].tracks.contains(track) else { return }
+        playlists[index].tracks.append(track)
+        save(playlists, key: playlistsKey)
+    }
+
+    func remove(_ track: MusicTrack, from playlistID: UUID) {
+        guard let index = playlists.firstIndex(where: { $0.id == playlistID }) else { return }
+        playlists[index].tracks.removeAll { $0.id == track.id }
+        save(playlists, key: playlistsKey)
+    }
+
     func setDarkMode(_ enabled: Bool) {
         darkMode = enabled
         UserDefaults.standard.set(enabled, forKey: darkModeKey)
@@ -168,6 +190,7 @@ final class AppModel: ObservableObject {
     private func loadLocalData() {
         favorites = load(key: favoritesKey)
         history = load(key: historyKey)
+        playlists = load(key: playlistsKey)
     }
 
     private func load<T: Decodable>(key: String) -> [T] {
