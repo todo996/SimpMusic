@@ -97,6 +97,7 @@ import com.maxrave.domain.mediaservice.handler.PlaylistType
 import com.maxrave.domain.mediaservice.handler.QueueData
 import com.maxrave.domain.utils.toSongEntity
 import com.maxrave.domain.utils.toTrack
+import com.maxrave.ktorext.getEngine
 import com.maxrave.logger.Logger
 import com.maxrave.simpmusic.Platform
 import com.maxrave.simpmusic.extension.angledGradientBackground
@@ -161,7 +162,6 @@ import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import dev.chrisbanes.haze.materials.HazeMaterials
 import dev.chrisbanes.haze.rememberHazeState
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.http.Url
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.painterResource
@@ -272,7 +272,7 @@ fun HomeScreen(
     }
     val animatedColor by animateColorAsState(topHeaderColor, tween(500))
     val mainHomeThumbnail by viewModel.mainHomeThumbnail.collectAsStateWithLifecycle()
-    val networkLoader = rememberNetworkLoader(HttpClient(CIO))
+    val networkLoader = rememberNetworkLoader(HttpClient(getEngine()))
     val dominantColorState =
         rememberDominantColorState(
             defaultColor = backgroundColor,

@@ -39,6 +39,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.kmpalette.loader.rememberNetworkLoader
 import com.kmpalette.rememberDominantColorState
+import com.maxrave.ktorext.getEngine
 import com.maxrave.simpmusic.Platform
 import com.maxrave.simpmusic.extension.angledGradientBackground
 import com.maxrave.simpmusic.extension.artworkScrimBrush
@@ -56,7 +57,6 @@ import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import dev.chrisbanes.haze.rememberHazeState
 import io.ktor.client.HttpClient
-import io.ktor.client.engine.cio.CIO
 import io.ktor.http.Url
 import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.viewmodel.koinViewModel
@@ -109,7 +109,7 @@ fun MixForYouScreen(
         }
     var topHeaderColor by remember { mutableStateOf(backgroundColor) }
     val animatedColor by animateColorAsState(topHeaderColor, tween(500))
-    val networkLoader = rememberNetworkLoader(HttpClient(CIO))
+    val networkLoader = rememberNetworkLoader(HttpClient(getEngine()))
     val dominantColorState =
         rememberDominantColorState(
             defaultColor = backgroundColor,
