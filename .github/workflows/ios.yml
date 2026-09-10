@@ -187,49 +187,91 @@ jobs:
           cp -R "$COMPOSE_RESOURCE_ROOT/composeResources" "$SIM_APP/compose-resources/"
           test -f "$SIM_APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
           xcrun simctl install "$DEVICE_ID" "$SIM_APP"
-          set +e
-          python3 - "$DEVICE_ID" > build/simctl-launch.log 2>&1 <<'PY' &
+          python3 - "$DEVICE_ID" <<'PY'
+          import os
+          import signal
           import subprocess
           import sys
+          import time
+          from pathlib import Path
 
-          process = subprocess.Popen(
-              ["xcrun", "simctl", "launch", sys.argv[1], "com.maxrave.simpmusic.ios"],
+          device_id = sys.argv[1]
+          bundle_id = "com.maxrave.simpmusic.ios"
+          launch_log = Path("build/simctl-launch.log")
+          system_log = Path("build/simctl-system.log")
+
+          def output_text(value):
+              if value is None:
+                  return ""
+              if isinstance(value, bytes):
+                  return value.decode("utf-8", errors="replace")
+              return value
+
+          launch_command = ["xcrun", "simctl", "launch", device_id, bundle_id]
+          launch_status = "not-started"
+          launch_output = ""
+          launch_process = subprocess.Popen(
+              launch_command,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.STDOUT,
+              text=True,
               start_new_session=True,
           )
-          print(process.pid, flush=True)
+          try:
+              launch_output, _ = launch_process.communicate(timeout=8)
+              launch_status = str(launch_process.returncode)
+          except subprocess.TimeoutExpired:
+              launch_status = "timeout"
+              try:
+                  os.killpg(launch_process.pid, signal.SIGKILL)
+              except ProcessLookupError:
+                  pass
+              timed_output, _ = launch_process.communicate(timeout=5)
+              launch_output = output_text(launch_output) + output_text(timed_output)
+
+          launch_log.write_text(
+              "command: " + " ".join(launch_command) + "\n"
+              + "status: " + launch_status + "\n"
+              + (launch_output or ""),
+              encoding="utf-8",
+          )
+
+          # Give the app a bounded startup window, then query its simulator launchd
+          # job. This avoids host `ps` false negatives and never leaves simctl behind.
+          time.sleep(7)
+          probe_command = [
+              "xcrun", "simctl", "spawn", device_id, "launchctl", "print",
+              f"gui/501/{bundle_id}",
+          ]
+          try:
+              probe = subprocess.run(
+                  probe_command,
+                  capture_output=True,
+                  text=True,
+                  timeout=10,
+              )
+              app_running = probe.returncode == 0
+              probe_output = output_text(probe.stdout) + output_text(probe.stderr)
+              probe_status = str(probe.returncode)
+          except subprocess.TimeoutExpired as error:
+              app_running = False
+              probe_output = output_text(error.stdout) + output_text(error.stderr)
+              probe_status = "timeout"
+
+          system_log.write_text(
+              "launch status: " + launch_status + "\n"
+              + "launchd probe status: " + probe_status + "\n"
+              + "app running after 15 seconds: " + str(app_running).lower() + "\n"
+              + probe_output,
+              encoding="utf-8",
+          )
+          print(launch_log.read_text(encoding="utf-8"), end="")
+          print(system_log.read_text(encoding="utf-8"), end="")
+
+          if not app_running:
+              raise SystemExit("Simulator app exited during the startup smoke test")
+          print("Simulator startup smoke test passed.")
           PY
-          LAUNCH_PID=$!
-          disown "$LAUNCH_PID" 2>/dev/null || true
-          sleep 15
-          if ps -A -o comm= | grep -Eq '(^|/)SimpMusic$'; then
-              APP_RUNNING=1
-          else
-              APP_RUNNING=0
-          fi
-          # Do not wait on simctl: on some macOS runners it keeps a child process after launch.
-          # The host process liveness check above is the smoke-test assertion we need.
-          SIMCTL_PID=$(head -n 1 build/simctl-launch.log || true)
-          if [ -n "$SIMCTL_PID" ]; then
-              kill -KILL -- -"$SIMCTL_PID" 2>/dev/null || true
-              kill -KILL "$SIMCTL_PID" 2>/dev/null || true
-          fi
-          kill -KILL "$LAUNCH_PID" 2>/dev/null || true
-          LAUNCH_STATUS=0
-          set -e
-          {
-            echo "simctl launch status: $LAUNCH_STATUS"
-            echo "app running after 15 seconds: $APP_RUNNING"
-          } > build/simctl-system.log
-          cat build/simctl-launch.log
-          if [ "$LAUNCH_STATUS" -ne 0 ]; then
-              echo "Simulator launch command failed with status $LAUNCH_STATUS"
-              exit 1
-          fi
-          if [ "$APP_RUNNING" -ne 1 ]; then
-              echo 'Simulator app exited during the startup smoke test'
-              exit 1
-          fi
-          echo 'Simulator startup smoke test passed.'
 
       - name: Regenerate device Xcode project
         run: |
