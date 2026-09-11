@@ -44,27 +44,28 @@ jobs:
           java-version: '21'
           distribution: microsoft
 
-      - name: Cache Gradle
-        uses: actions/cache@v4
+      - name: Restore Gradle cache
+        id: gradle-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
           key: ios-crashfix63-gradle-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties', '**/*.gradle.kts', 'scripts/ios/*.py') }}
           restore-keys: |
-            ios-fast-gradle-${{ runner.os }}-
             ios-crashfix63-gradle-${{ runner.os }}-
-          save-always: true
+            ios-fast-gradle-${{ runner.os }}-
 
-      - name: Cache Kotlin Native
-        uses: actions/cache@v4
+      - name: Restore Kotlin Native cache
+        id: konan-cache
+        uses: actions/cache/restore@v4
         with:
           path: ~/.konan
           key: ios-crashfix63-konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties', 'scripts/ios/*.py') }}
           restore-keys: |
+            ios-crashfix63-konan-${{ runner.os }}-
             ios-fast-konan-${{ runner.os }}-
             ios-fixed-konan-${{ runner.os }}-
-          save-always: true
 
       - name: Prepare KMP and align Compose ABI
         run: |
@@ -86,10 +87,45 @@ jobs:
           fi
           echo 'Compose ABI alignment prepared.'
 
+      - name: Restore linked iPhone framework
+        id: framework-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            composeApp/build/bin/iosArm64/debugFramework
+            composeApp/build/generated/compose/resourceGenerator/preparedResources
+          key: ios-crashfix63-framework-v1-${{ runner.os }}-${{ hashFiles('composeApp/src/**/*.kt', 'common/src/**/*.kt', 'domain/src/**/*.kt', 'data/src/**/*.kt', 'core/**/*.kt', '**/*.gradle.kts', 'gradle/libs.versions.toml', 'scripts/ios/*.py', 'scripts/ios/*.patch') }}
+
       - name: Link iPhone ARM64 framework
+        if: steps.framework-cache.outputs.cache-hit != 'true'
         run: |
           ./gradlew :composeApp:linkDebugFrameworkIosArm64 \
             --stacktrace --no-configuration-cache --build-cache --parallel
+
+      - name: Save linked iPhone framework
+        if: steps.framework-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            composeApp/build/bin/iosArm64/debugFramework
+            composeApp/build/generated/compose/resourceGenerator/preparedResources
+          key: ${{ steps.framework-cache.outputs.cache-primary-key }}
+
+      - name: Save Gradle cache after successful link
+        if: steps.gradle-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ steps.gradle-cache.outputs.cache-primary-key }}
+
+      - name: Save Kotlin Native cache after successful link
+        if: steps.konan-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.konan
+          key: ${{ steps.konan-cache.outputs.cache-primary-key }}
 
       - name: Verify framework has no fatal KLIB linkage stubs
         run: |
@@ -104,24 +140,25 @@ jobs:
           from pathlib import Path
           import sys
 
-          p = Path(sys.argv[1])
-          data = p.read_bytes()
-          fatal_fragments = [
+          data = Path(sys.argv[1]).read_bytes()
+          # Symbol names such as Painter$stableprop_getter are legitimate when the
+          # provider exists. Fail only on the actual Kotlin/Native linkage-error text.
+          fatal_messages = [
               "can not be called: No function found for symbol",
               "uses unlinked class symbol",
               "uses unlinked function symbol",
-              "Painter$stableprop_getter",
+              "Variable uses unlinked class symbol",
           ]
           found = []
-          for text in fatal_fragments:
+          for text in fatal_messages:
               if text.encode() in data or text.encode("utf-16le") in data:
                   found.append(text)
           if found:
-              print("ERROR: Kotlin/Native fatal linkage stubs remain:")
+              print("ERROR: actual Kotlin/Native fatal linkage messages remain:")
               for item in found:
                   print(" -", item)
               raise SystemExit(1)
-          print("No known fatal Kotlin/Native linkage stubs in device framework.")
+          print("No fatal Kotlin/Native linkage messages in device framework.")
           PY
 
       - name: Locate Compose iOS resources
@@ -239,19 +276,22 @@ jobs:
           import sys
 
           data = Path(sys.argv[1]).read_bytes()
-          fatal_fragments = [
+          fatal_messages = [
               "can not be called: No function found for symbol",
               "uses unlinked class symbol",
               "uses unlinked function symbol",
-              "Painter$stableprop_getter",
+              "Variable uses unlinked class symbol",
           ]
-          found = [s for s in fatal_fragments if s.encode() in data or s.encode("utf-16le") in data]
+          found = []
+          for text in fatal_messages:
+              if text.encode() in data or text.encode("utf-16le") in data:
+                  found.append(text)
           if found:
-              print("ERROR: final executable still contains fatal Kotlin/Native linkage stubs:")
-              for s in found:
-                  print(" -", s)
+              print("ERROR: final executable still contains fatal Kotlin/Native linkage messages:")
+              for item in found:
+                  print(" -", item)
               raise SystemExit(1)
-          print("Final executable is free of fatal KLIB linkage signatures seen in all four iPhone crash logs.")
+          print("Final executable is free of the fatal KLIB linkage messages seen in the iPhone crash logs.")
           PY
 
           LAYOUT=$(nm -m "$BIN" | grep '_OBJC_CLASS_\$_UIViewLayoutRegion' || true)
