@@ -1,0 +1,306 @@
+name: Build iOS CrashFix 63
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ios-crashfix-build63-20260911
+
+concurrency:
+  group: ios-crashfix63-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-ios-crashfix:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Select Xcode 26 SDK
+        run: |
+          set -euo pipefail
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1 || true)
+          if [ -z "$XCODE" ]; then
+            echo 'ERROR: Xcode 26 is required by Compose Multiplatform 1.11.x UIKit symbols.'
+            ls -d /Applications/Xcode*.app || true
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE/Contents/Developer"
+          xcodebuild -version
+          SDK=$(xcrun --sdk iphoneos --show-sdk-version)
+          echo "iPhoneOS SDK: $SDK"
+          case "$SDK" in
+            26.*) ;;
+            *) echo "ERROR: expected iOS 26 SDK, got $SDK"; exit 1 ;;
+          esac
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: '21'
+          distribution: microsoft
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ios-crashfix63-gradle-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties', '**/*.gradle.kts', 'scripts/ios/*.py') }}
+          restore-keys: |
+            ios-fast-gradle-${{ runner.os }}-
+            ios-crashfix63-gradle-${{ runner.os }}-
+          save-always: true
+
+      - name: Cache Kotlin Native
+        uses: actions/cache@v4
+        with:
+          path: ~/.konan
+          key: ios-crashfix63-konan-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml', 'gradle/wrapper/gradle-wrapper.properties', 'scripts/ios/*.py') }}
+          restore-keys: |
+            ios-fast-konan-${{ runner.os }}-
+            ios-fixed-konan-${{ runner.os }}-
+          save-always: true
+
+      - name: Prepare KMP and align Compose ABI
+        run: |
+          set -euo pipefail
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_override.patch
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_crypto_override.patch
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_avplayer_override.patch
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_rate_override.patch
+          git -C core apply --whitespace=nowarn ../scripts/ios/core_cache_override.patch
+          python3 scripts/ios/prepare_kmp.py
+          python3 scripts/ios/prepare_compose_kmp.py
+          python3 scripts/ios/prepare_compose_111_crashfix.py
+          grep -q 'composeMultiplatform = "1.11.1"' gradle/libs.versions.toml
+          grep -q 'coil3 = "3.5.0"' gradle/libs.versions.toml
+          grep -q 'IOS_COMPOSE_111_ABI_GUARD_20260911' composeApp/build.gradle.kts
+          if grep -q 'useVersion("1.10.3")' composeApp/build.gradle.kts; then
+            echo 'ERROR: old Compose 1.10.3 runtime guard still present'
+            exit 1
+          fi
+          echo 'Compose ABI alignment prepared.'
+
+      - name: Link iPhone ARM64 framework
+        run: |
+          ./gradlew :composeApp:linkDebugFrameworkIosArm64 \
+            --stacktrace --no-configuration-cache --build-cache --parallel
+
+      - name: Verify framework has no fatal KLIB linkage stubs
+        run: |
+          set -euo pipefail
+          FRAMEWORK=composeApp/build/bin/iosArm64/debugFramework/ComposeApp.framework/ComposeApp
+          test -f "$FRAMEWORK"
+          file "$FRAMEWORK" | tee build-framework-file.txt
+          ARCHS=$(xcrun lipo -archs "$FRAMEWORK")
+          echo "Framework architectures: $ARCHS" | tee build-framework-archs.txt
+          printf '%s\n' "$ARCHS" | tr ' ' '\n' | grep -qx arm64
+          python3 - "$FRAMEWORK" <<'PY'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          data = p.read_bytes()
+          fatal_fragments = [
+              "can not be called: No function found for symbol",
+              "uses unlinked class symbol",
+              "uses unlinked function symbol",
+              "Painter$stableprop_getter",
+          ]
+          found = []
+          for text in fatal_fragments:
+              if text.encode() in data or text.encode("utf-16le") in data:
+                  found.append(text)
+          if found:
+              print("ERROR: Kotlin/Native fatal linkage stubs remain:")
+              for item in found:
+                  print(" -", item)
+              raise SystemExit(1)
+          print("No known fatal Kotlin/Native linkage stubs in device framework.")
+          PY
+
+      - name: Locate Compose iOS resources
+        run: |
+          set -euo pipefail
+          RESOURCE_FILE=$(find "$GITHUB_WORKSPACE/composeApp/build" -type f \
+            -path '*/preparedResources/commonMain/composeResources/values/strings.commonMain.cvr' \
+            -print -quit)
+          if [ -z "$RESOURCE_FILE" ]; then
+            ./gradlew :composeApp:generateComposeResClass --no-configuration-cache --build-cache || true
+            RESOURCE_FILE=$(find "$GITHUB_WORKSPACE/composeApp/build" -type f \
+              -path '*/preparedResources/commonMain/composeResources/values/strings.commonMain.cvr' \
+              -print -quit)
+          fi
+          test -n "$RESOURCE_FILE"
+          SOURCE_RESOURCE_ROOT=$(dirname "$(dirname "$RESOURCE_FILE")")
+          STAGED_RESOURCE_ROOT="$GITHUB_WORKSPACE/build/ios-compose-resources/composeResources/simpmusic.composeapp.generated.resources"
+          mkdir -p "$STAGED_RESOURCE_ROOT"
+          cp -R "$SOURCE_RESOURCE_ROOT/." "$STAGED_RESOURCE_ROOT/"
+          test -f "$STAGED_RESOURCE_ROOT/values/strings.commonMain.cvr"
+          echo "COMPOSE_RESOURCE_ROOT=$GITHUB_WORKSPACE/build/ios-compose-resources" >> "$GITHUB_ENV"
+
+      - name: Generate app icons
+        run: |
+          set -euo pipefail
+          SRC=androidApp/src/main/res/mipmap-xxxhdpi/ic_launcher.webp
+          SET=iosApp/Assets.xcassets/AppIcon.appiconset
+          mkdir -p "$SET"
+          make_icon() { sips -s format png -z "$1" "$1" "$SRC" --out "$SET/$2" >/dev/null; }
+          make_icon 40 icon-20@2x.png
+          make_icon 60 icon-20@3x.png
+          make_icon 58 icon-29@2x.png
+          make_icon 87 icon-29@3x.png
+          make_icon 80 icon-40@2x.png
+          make_icon 120 icon-40@3x.png
+          make_icon 120 icon-60@2x.png
+          make_icon 180 icon-60@3x.png
+          make_icon 20 icon-20-ipad.png
+          make_icon 40 icon-20-ipad@2x.png
+          make_icon 29 icon-29-ipad.png
+          make_icon 58 icon-29-ipad@2x.png
+          make_icon 40 icon-40-ipad.png
+          make_icon 80 icon-40-ipad@2x.png
+          make_icon 76 icon-76-ipad.png
+          make_icon 152 icon-76-ipad@2x.png
+          make_icon 167 icon-83.5-ipad@2x.png
+          make_icon 1024 icon-marketing.png
+          cat > "$SET/Contents.json" <<'JSON'
+          {"images":[
+            {"filename":"icon-20@2x.png","idiom":"iphone","scale":"2x","size":"20x20"},
+            {"filename":"icon-20@3x.png","idiom":"iphone","scale":"3x","size":"20x20"},
+            {"filename":"icon-29@2x.png","idiom":"iphone","scale":"2x","size":"29x29"},
+            {"filename":"icon-29@3x.png","idiom":"iphone","scale":"3x","size":"29x29"},
+            {"filename":"icon-40@2x.png","idiom":"iphone","scale":"2x","size":"40x40"},
+            {"filename":"icon-40@3x.png","idiom":"iphone","scale":"3x","size":"40x40"},
+            {"filename":"icon-60@2x.png","idiom":"iphone","scale":"2x","size":"60x60"},
+            {"filename":"icon-60@3x.png","idiom":"iphone","scale":"3x","size":"60x60"},
+            {"filename":"icon-20-ipad.png","idiom":"ipad","scale":"1x","size":"20x20"},
+            {"filename":"icon-20-ipad@2x.png","idiom":"ipad","scale":"2x","size":"20x20"},
+            {"filename":"icon-29-ipad.png","idiom":"ipad","scale":"1x","size":"29x29"},
+            {"filename":"icon-29-ipad@2x.png","idiom":"ipad","scale":"2x","size":"29x29"},
+            {"filename":"icon-40-ipad.png","idiom":"ipad","scale":"1x","size":"40x40"},
+            {"filename":"icon-40-ipad@2x.png","idiom":"ipad","scale":"2x","size":"40x40"},
+            {"filename":"icon-76-ipad.png","idiom":"ipad","scale":"1x","size":"76x76"},
+            {"filename":"icon-76-ipad@2x.png","idiom":"ipad","scale":"2x","size":"76x76"},
+            {"filename":"icon-83.5-ipad@2x.png","idiom":"ipad","scale":"2x","size":"83.5x83.5"},
+            {"filename":"icon-marketing.png","idiom":"ios-marketing","scale":"1x","size":"1024x1024"}
+          ],"info":{"author":"xcode","version":1}}
+          JSON
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: |
+          cd iosApp
+          xcodegen generate
+
+      - name: Build unsigned iPhone app 2.1.3 build 63
+        run: |
+          xcodebuild \
+            -project iosApp/SimpMusic.xcodeproj \
+            -scheme SimpMusic \
+            -configuration Debug \
+            -sdk iphoneos \
+            -derivedDataPath build/ios \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            MARKETING_VERSION=2.1.3 \
+            CURRENT_PROJECT_VERSION=63 \
+            IPHONEOS_DEPLOYMENT_TARGET=16.0 \
+            ENABLE_DEBUG_DYLIB=NO \
+            ONLY_ACTIVE_ARCH=YES \
+            ARCHS=arm64 \
+            build
+
+      - name: Verify final iPhone executable
+        run: |
+          set -euo pipefail
+          APP=build/ios/Build/Products/Debug-iphoneos/SimpMusic.app
+          BIN="$APP/SimpMusic"
+          test -x "$BIN"
+          mkdir -p "$APP/compose-resources"
+          cp -R "$COMPOSE_RESOURCE_ROOT/composeResources" "$APP/compose-resources/"
+          test -f "$APP/compose-resources/composeResources/simpmusic.composeapp.generated.resources/values/strings.commonMain.cvr"
+
+          SHORT_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
+          BUILD_VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
+          test "$SHORT_VERSION" = '2.1.3'
+          test "$BUILD_VERSION" = '63'
+          file "$BIN" | grep -q arm64
+
+          python3 - "$BIN" <<'PY'
+          from pathlib import Path
+          import sys
+
+          data = Path(sys.argv[1]).read_bytes()
+          fatal_fragments = [
+              "can not be called: No function found for symbol",
+              "uses unlinked class symbol",
+              "uses unlinked function symbol",
+              "Painter$stableprop_getter",
+          ]
+          found = [s for s in fatal_fragments if s.encode() in data or s.encode("utf-16le") in data]
+          if found:
+              print("ERROR: final executable still contains fatal Kotlin/Native linkage stubs:")
+              for s in found:
+                  print(" -", s)
+              raise SystemExit(1)
+          print("Final executable is free of fatal KLIB linkage signatures seen in all four iPhone crash logs.")
+          PY
+
+          LAYOUT=$(nm -m "$BIN" | grep '_OBJC_CLASS_\$_UIViewLayoutRegion' || true)
+          if [ -n "$LAYOUT" ]; then
+            echo "$LAYOUT" | tee build/final-layoutregion-linkage.txt
+            if echo "$LAYOUT" | grep -qv -i 'weak'; then
+              echo 'ERROR: UIViewLayoutRegion is not weak-linked for pre-iOS-26 devices'
+              exit 1
+            fi
+          else
+            echo 'UIViewLayoutRegion not referenced by final executable.' | tee build/final-layoutregion-linkage.txt
+          fi
+
+          if otool -L "$BIN" | grep -q '@rpath/SimpMusic.debug.dylib'; then
+            echo 'ERROR: final app depends on Xcode debug dylib'
+            exit 1
+          fi
+          test ! -e "$APP/SimpMusic.debug.dylib"
+          dwarfdump --uuid "$BIN" | tee build/final-macho-uuid.txt
+          echo "Version: $SHORT_VERSION ($BUILD_VERSION)" | tee build/final-version.txt
+          shasum -a 256 "$BIN" | tee build/final-binary-sha256.txt
+
+      - name: Package unsigned IPA
+        run: |
+          set -euo pipefail
+          rm -rf build/Payload
+          mkdir -p build/Payload
+          cp -R build/ios/Build/Products/Debug-iphoneos/SimpMusic.app build/Payload/
+          (cd build && zip -qry SimpMusic-2.1.3-build63-CrashFix-unsigned.ipa Payload)
+          shasum -a 256 build/SimpMusic-2.1.3-build63-CrashFix-unsigned.ipa | tee build/final-ipa-sha256.txt
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpMusic-iOS-CrashFix-build63
+          path: build/SimpMusic-2.1.3-build63-CrashFix-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpMusic-iOS-CrashFix-verification-${{ github.run_number }}
+          path: |
+            build-framework-file.txt
+            build-framework-archs.txt
+            build/final-layoutregion-linkage.txt
+            build/final-macho-uuid.txt
+            build/final-version.txt
+            build/final-binary-sha256.txt
+            build/final-ipa-sha256.txt
+          if-no-files-found: ignore
