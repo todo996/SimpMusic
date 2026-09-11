@@ -19,8 +19,8 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: SimpMusic
-        CFBundleShortVersionString: '2.1.2'
-        CFBundleVersion: '60'
+        CFBundleShortVersionString: '$(MARKETING_VERSION)'
+        CFBundleVersion: '$(CURRENT_PROJECT_VERSION)'
         UILaunchScreen: {}
         CADisableMinimumFrameDurationOnPhone: true
         UIBackgroundModes:
@@ -36,7 +36,7 @@ targets:
     settings:
       base:
         MARKETING_VERSION: '2.1.2'
-        CURRENT_PROJECT_VERSION: '60'
+        CURRENT_PROJECT_VERSION: '62'
         PRODUCT_BUNDLE_IDENTIFIER: com.maxrave.simpmusic.ios
         CODE_SIGN_STYLE: Automatic
         TARGETED_DEVICE_FAMILY: '1,2'
